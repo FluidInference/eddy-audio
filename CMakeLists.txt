@@ -1,0 +1,52 @@
+cmake_minimum_required(VERSION 4.1)
+project(eddy LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+option(EDDY_ENABLE_OPENVINO "Enable OpenVINO backend" ON)
+
+if(EDDY_ENABLE_OPENVINO)
+  find_package(OpenVINO REQUIRED COMPONENTS Runtime)
+endif()
+
+add_library(eddy STATIC)
+target_include_directories(eddy
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+  PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party
+)
+
+target_sources(eddy
+  PRIVATE
+    src/core/runtime.cpp
+    src/core/model.cpp
+    src/backends/openvino_backend.cpp
+    src/models/parakeet/parakeet_openvino.cpp
+)
+
+if(EDDY_ENABLE_OPENVINO)
+  target_compile_definitions(eddy PUBLIC EDDY_WITH_OPENVINO=1)
+  target_link_libraries(eddy PUBLIC openvino::runtime)
+endif()
+
+install(TARGETS eddy EXPORT eddyTargets ARCHIVE DESTINATION lib LIBRARY DESTINATION lib RUNTIME DESTINATION bin)
+install(EXPORT eddyTargets FILE eddyTargets.cmake NAMESPACE eddy:: DESTINATION lib/cmake/eddy)
+install(DIRECTORY include/ DESTINATION include)
+
+include(CMakePackageConfigHelpers)
+write_basic_package_version_file(${CMAKE_CURRENT_BINARY_DIR}/eddyConfigVersion.cmake
+  VERSION 0.1.0
+  COMPATIBILITY AnyNewerVersion
+)
+set(EDDY_ENABLE_OPENVINO_CONFIG ${EDDY_ENABLE_OPENVINO})
+configure_file(cmake/eddyConfig.cmake.in ${CMAKE_CURRENT_BINARY_DIR}/eddyConfig.cmake @ONLY)
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/eddyConfig.cmake ${CMAKE_CURRENT_BINARY_DIR}/eddyConfigVersion.cmake DESTINATION lib/cmake/eddy)
+
+include(CTest)
+if(BUILD_TESTING)
+  add_subdirectory(tests)
+endif()

@@ -1,0 +1,9 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+if(@EDDY_ENABLE_OPENVINO@)
+  find_dependency(OpenVINO COMPONENTS Runtime)
+endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/eddyTargets.cmake")
