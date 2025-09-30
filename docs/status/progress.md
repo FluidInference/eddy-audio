@@ -46,7 +46,7 @@ This document captures what is already in place and what still needs to ship to 
 
 ### SDK Surface & Language Bridges
 - Define stable C API surface for core SDK (model loading, session/inference lifecycle, streaming callbacks).
-- Generate bindings for C#, Kotlin (JVM + Android), Rust (crate with safe wrappers), and TypeScript (Node/WebAssembly or native addon).
+- Generate bindings for C#, Kotlin (JVM + Android), and Rust (crate with safe wrappers).
 - Package/distribution strategy for desktop (macOS/Windows/Linux) and mobile targets (iOS/Android) including model asset delivery.
 
 ### Runtime & Deployment Concerns

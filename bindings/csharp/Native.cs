@@ -8,7 +8,7 @@ namespace Eddy;
 
 internal static class Native
 {
-    private const string LibName = "eddy";
+    private const string LibName = "eddy_c";
 
     // Opaque handle
     internal struct EddyWhisperPipelineHandle : IDisposable

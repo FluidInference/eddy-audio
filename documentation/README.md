@@ -1,6 +1,6 @@
 # eddy Documentation
 
-eddy is a high-performance, embeddable inference SDK built for native runtimes. It provides speech recognition, transcription, and audio processing capabilities with a modular backend layer—OpenVINO GenAI is the first supported target, with additional runtimes in development.
+eddy is a high-performance, embeddable inference SDK built for native runtimes. It provides speech recognition, transcription, and audio processing capabilities with a modular backend layer — OpenVINO GenAI is the first supported target, with additional runtimes in development.
 
 ## Table of Contents
 
@@ -10,20 +10,19 @@ eddy is a high-performance, embeddable inference SDK built for native runtimes. 
 - [C++ API Reference](api/cpp-api.md) - Core C++ API documentation
 - [C API Reference](api/c-api.md) - C FFI layer for language bindings
 - [C# Bindings](bindings/csharp-bindings.md) - .NET integration guide
-- [TypeScript Bindings](bindings/typescript-bindings.md) - Node.js integration guide
 - [Examples](examples.md) - Code examples and usage patterns
 - [Architecture](architecture.md) - System design and architecture overview
 
 ## Quick Links
 
 ### Features
-- ✅ **Whisper Speech Recognition** - OpenAI's Whisper large-v3-turbo model
-- ✅ **Intel NPU Acceleration** - 6x faster inference than CPU
-- ✅ **Model Caching** - 55x faster startup after first run
-- ✅ **Multi-Device Support** - NPU, CPU, GPU, AUTO
-- ✅ **Language Bindings** - C#, TypeScript (Rust, Kotlin, Flutter planned)
-- ✅ **Timestamp Support** - Word/segment-level timestamps
-- ✅ **Multi-Language** - Support for 99+ languages
+- Whisper Speech Recognition — OpenAI's Whisper large-v3-turbo model
+- Intel NPU Acceleration — 6x faster inference than CPU
+- Model Caching — 55x faster startup after first run
+- Multi-Device Support — NPU, CPU, GPU, AUTO
+- Language Bindings — C# (Rust, Kotlin, Flutter planned)
+- Timestamp Support — Word/segment-level timestamps
+- Multi-Language — Support for 99+ languages
 
 ### Supported Platforms
 - Windows 11 (Intel Core Ultra with NPU)
@@ -56,9 +55,10 @@ std::cout << "Confidence: " << (result.confidence * 100) << "%" << std::endl;
 
 ## Community and Support
 
-- **Issues**: [GitHub Issues](https://github.com/yourusername/eddy/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/eddy/discussions)
+- Issues: https://github.com/yourusername/eddy/issues
+- Discussions: https://github.com/yourusername/eddy/discussions
 
 ## License
 
-Apache License 2.0 - See [LICENSE](../LICENSE) for details.
+Apache License 2.0 - See ../LICENSE for details.
+

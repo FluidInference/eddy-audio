@@ -8,7 +8,6 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 option(EDDY_ENABLE_OPENVINO "Enable OpenVINO backend" ON)
 option(EDDY_BUILD_EXAMPLES "Build examples" ON)
 option(EDDY_BUILD_CSHARP "Build C# bindings" OFF)
-option(EDDY_BUILD_TYPESCRIPT "Build TypeScript bindings" OFF)
 
 if(EDDY_ENABLE_OPENVINO)
   find_package(OpenVINO REQUIRED COMPONENTS Runtime)
@@ -35,7 +34,6 @@ if(EDDY_ENABLE_OPENVINO)
   target_sources(eddy PRIVATE
     src/pipelines/whisper_pipeline.cpp
     src/pipelines/audio_utils.cpp
-    src/eddy_c.cpp
   )
   target_compile_definitions(eddy PUBLIC EDDY_WITH_OPENVINO=1)
   target_link_libraries(eddy PUBLIC openvino::runtime openvino::genai)
@@ -57,6 +55,18 @@ install(FILES ${CMAKE_CURRENT_BINARY_DIR}/eddyConfig.cmake ${CMAKE_CURRENT_BINAR
 if(EDDY_BUILD_EXAMPLES)
   add_subdirectory(examples)
 endif()
+
+# Build a shared C API shim (eddy_c) that exposes the extern "C" FFI
+add_library(eddy_c SHARED src/eddy_c.cpp)
+target_include_directories(eddy_c
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(eddy_c PRIVATE eddy)
+target_compile_definitions(eddy_c PRIVATE EDDY_BUILD_SHARED=1)
+
+install(TARGETS eddy_c RUNTIME DESTINATION bin LIBRARY DESTINATION lib ARCHIVE DESTINATION lib)
 
 include(CTest)
 if(BUILD_TESTING)

@@ -9,12 +9,13 @@
     <AssemblyName>Eddy</AssemblyName>
     <Version>0.1.0</Version>
     <Authors>Fluid Inference</Authors>
-    <Description>C# bindings for eddy - Audio inference with OpenVINO</Description>
+    <Description>C# bindings for eddy - your native AI runtime libray</Description>
   </PropertyGroup>
 
   <ItemGroup>
-    <None Include="..\..\build\**\eddy.dll" Pack="true" PackagePath="runtimes\win-x64\native\" Condition="Exists('..\..\build')" />
-    <None Include="..\..\build\**\libeddy.so" Pack="true" PackagePath="runtimes\linux-x64\native\" Condition="Exists('..\..\build')" />
+    <None Include="..\..\build\**\eddy_c.dll" Pack="true" PackagePath="runtimes\win-x64\native\" Condition="Exists('..\..\build')" />
+    <None Include="..\..\build\**\libeddy_c.so" Pack="true" PackagePath="runtimes\linux-x64\native\" Condition="Exists('..\..\build')" />
+    <None Include="..\..\build\**\libeddy_c.dylib" Pack="true" PackagePath="runtimes\osx-x64\native\" Condition="Exists('..\..\build')" />
   </ItemGroup>
 
 </Project>

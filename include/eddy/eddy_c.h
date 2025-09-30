@@ -3,7 +3,7 @@
 
 /**
  * @file eddy_c.h
- * @brief C API for Eddy SDK - enables language bindings (C#, TypeScript, etc.)
+ * @brief C API for Eddy SDK - enables language bindings (C#, etc.)
  */
 
 #ifndef EDDY_C_H

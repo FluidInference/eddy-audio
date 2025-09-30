@@ -1,6 +1,6 @@
 # eddy (Work In Progress)
 
-eddy is a C++ inference library designed for native runtimes and multi-vendor edge NPUs, exposing a consistent C++ API plus language bindings for app developers (C#, TypeScript, and more to follow). The current milestone focuses on the OpenVINO 2025.x backend for the Parakeet-TDT speech model family while we bring additional runtimes online.
+eddy is a C++ inference library designed for native runtimes and multi-vendor edge NPUs, exposing a consistent C++ API plus language bindings for app developers (C#; more to follow). The current milestone focuses on the OpenVINO 2025.x backend for the Parakeet-TDT speech model family while we bring additional runtimes online.
 
 ## Repository Layout
 - `include/` – public headers for the runtime, backend abstractions, and model bridges.
