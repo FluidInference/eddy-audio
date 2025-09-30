@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 4.1)
+cmake_minimum_required(VERSION 3.22)
 project(eddy LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -6,9 +6,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 option(EDDY_ENABLE_OPENVINO "Enable OpenVINO backend" ON)
+option(EDDY_BUILD_EXAMPLES "Build examples" ON)
+option(EDDY_BUILD_CSHARP "Build C# bindings" OFF)
+option(EDDY_BUILD_TYPESCRIPT "Build TypeScript bindings" OFF)
 
 if(EDDY_ENABLE_OPENVINO)
   find_package(OpenVINO REQUIRED COMPONENTS Runtime)
+  find_package(OpenVINOGenAI REQUIRED)
 endif()
 
 add_library(eddy STATIC)
@@ -25,12 +29,16 @@ target_sources(eddy
     src/core/runtime.cpp
     src/core/model.cpp
     src/backends/openvino_backend.cpp
-    src/models/parakeet/parakeet_openvino.cpp
 )
 
 if(EDDY_ENABLE_OPENVINO)
+  target_sources(eddy PRIVATE
+    src/pipelines/whisper_pipeline.cpp
+    src/pipelines/audio_utils.cpp
+    src/eddy_c.cpp
+  )
   target_compile_definitions(eddy PUBLIC EDDY_WITH_OPENVINO=1)
-  target_link_libraries(eddy PUBLIC openvino::runtime)
+  target_link_libraries(eddy PUBLIC openvino::runtime openvino::genai)
 endif()
 
 install(TARGETS eddy EXPORT eddyTargets ARCHIVE DESTINATION lib LIBRARY DESTINATION lib RUNTIME DESTINATION bin)
@@ -45,6 +53,10 @@ write_basic_package_version_file(${CMAKE_CURRENT_BINARY_DIR}/eddyConfigVersion.c
 set(EDDY_ENABLE_OPENVINO_CONFIG ${EDDY_ENABLE_OPENVINO})
 configure_file(cmake/eddyConfig.cmake.in ${CMAKE_CURRENT_BINARY_DIR}/eddyConfig.cmake @ONLY)
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/eddyConfig.cmake ${CMAKE_CURRENT_BINARY_DIR}/eddyConfigVersion.cmake DESTINATION lib/cmake/eddy)
+
+if(EDDY_BUILD_EXAMPLES)
+  add_subdirectory(examples)
+endif()
 
 include(CTest)
 if(BUILD_TESTING)

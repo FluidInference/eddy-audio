@@ -1,11 +1,11 @@
-# Eddy SDK Progress Tracker
+# eddy Progress Tracker
 
 This document captures what is already in place and what still needs to ship to satisfy the original goals for the cross-platform edge inference SDK (Intel, Qualcomm, AMD NPUs) and multi-language bindings.
 
 ## What’s Done
 
 ### Core SDK Framework
-- C++20 project scaffold with `eddy::Runtime`, generic backend interface, and OpenVINO backend wrapper.
+- C++20 project scaffold with `eddy::Runtime`, a generic backend interface, and the initial OpenVINO backend implementation.
 - Parakeet model abstractions (`ModelPaths`, runtime configuration, segment/result types) shared between implementations.
 - Build system (CMake) installs headers/lib and locates OpenVINO runtime.
 

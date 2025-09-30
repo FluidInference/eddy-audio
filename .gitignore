@@ -39,3 +39,45 @@
 
 # debug information files
 *.dwo
+
+# Build directories
+build/
+cmake-build-*/
+out/
+
+# Model files and cache
+models/
+cache/
+*.blob
+
+# Test audio (can be large)
+test_audio/
+
+# IDE
+.vscode/
+.vs/
+.idea/
+*.swp
+*.swo
+.claude/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Node.js
+node_modules/
+dist/
+*.tsbuildinfo
+
+# .NET
+bin/
+obj/
+*.user
+*.suo
+
+# OS
+.DS_Store
+Thumbs.db

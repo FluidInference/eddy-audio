@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RootNamespace>Eddy</RootNamespace>
+    <AssemblyName>Eddy</AssemblyName>
+    <Version>0.1.0</Version>
+    <Authors>Fluid Inference</Authors>
+    <Description>C# bindings for eddy - Audio inference with OpenVINO</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\build\**\eddy.dll" Pack="true" PackagePath="runtimes\win-x64\native\" Condition="Exists('..\..\build')" />
+    <None Include="..\..\build\**\libeddy.so" Pack="true" PackagePath="runtimes\linux-x64\native\" Condition="Exists('..\..\build')" />
+  </ItemGroup>
+
+</Project>
