@@ -13,6 +13,9 @@ class CompiledModel;
 
 namespace eddy::parakeet {
 
+// Forward declaration
+class OpenVINOParakeet;
+
 std::shared_ptr<OpenVINOParakeet> make_openvino_parakeet(std::shared_ptr<eddy::OpenVINOBackend> backend,
                                                         ModelPaths model_paths,
                                                         RuntimeConfig runtime_cfg);
@@ -28,10 +31,12 @@ public:
 
   void warmup();
 
+  // Public to allow helper functions in implementation file
+  struct Impl;
+
 private:
   void ensure_compiled_model();
 
-  struct Impl;
   std::unique_ptr<Impl> impl_;
 };
 

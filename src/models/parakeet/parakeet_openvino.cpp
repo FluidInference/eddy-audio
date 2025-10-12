@@ -231,7 +231,10 @@ void OpenVINOParakeet::ensure_compiled_model() {
     }
     impl_->joint_output_size = joint_shape.back();
 
-    const auto total_heads = impl_->tokenizer.vocab_size() + impl_->runtime_cfg.duration_bins.size();
+    // Use blank_id + 1 as the effective vocab size for validation
+    // (vocab JSON may have extra entries beyond blank that aren't used)
+    const auto effective_vocab_size = static_cast<size_t>(impl_->runtime_cfg.blank_token_id) + 1;
+    const auto total_heads = effective_vocab_size + impl_->runtime_cfg.duration_bins.size();
     if (total_heads > impl_->joint_output_size) {
       throw std::runtime_error("Joint model output smaller than token+duration heads");
     }
@@ -254,12 +257,12 @@ MelFeatures run_preprocessor(OpenVINOParakeet::Impl& impl, const AudioSegment& s
   ov::Tensor audio_length(ov::element::i64, {1});
   audio_length.data<int64_t>()[0] = static_cast<int64_t>(segment.pcm.size());
 
-  impl.preproc_request.set_tensor("audio_signal", audio_signal);
-  impl.preproc_request.set_tensor("audio_length", audio_length);
+  impl.preproc_request.set_input_tensor(0, audio_signal);  // audio_signal
+  impl.preproc_request.set_input_tensor(1, audio_length);  // audio_length
   impl.preproc_request.infer();
 
-  const auto mel_tensor = impl.preproc_request.get_output_tensor("melspectrogram");
-  const auto length_tensor = impl.preproc_request.get_output_tensor("melspectrogram_length");
+  const auto mel_tensor = impl.preproc_request.get_output_tensor(0);  // melspectrogram
+  const auto length_tensor = impl.preproc_request.get_output_tensor(1);  // melspectrogram_length
 
   const int64_t valid_frames = length_tensor.data<int64_t>()[0];
   if (valid_frames <= 0) {
@@ -304,12 +307,12 @@ EncoderActivations run_encoder(OpenVINOParakeet::Impl& impl, const MelFeatures& 
   ov::Tensor mel_length(ov::element::i32, {1});
   mel_length.data<int32_t>()[0] = static_cast<int32_t>(frames_to_copy);
 
-  impl.encoder_request.set_tensor("melspectogram", mel_tensor);
-  impl.encoder_request.set_tensor("melspectogram_length", mel_length);
+  impl.encoder_request.set_input_tensor(0, mel_tensor);  // melspectogram
+  impl.encoder_request.set_input_tensor(1, mel_length);  // melspectogram_length
   impl.encoder_request.infer();
 
-  const auto encoder_tensor = impl.encoder_request.get_output_tensor("encoder_output");
-  const auto encoder_length_tensor = impl.encoder_request.get_output_tensor("encoder_output_length");
+  const auto encoder_tensor = impl.encoder_request.get_output_tensor(0);  // encoder_output
+  const auto encoder_length_tensor = impl.encoder_request.get_output_tensor(1);  // encoder_output_length
 
   EncoderActivations activations;
   activations.hidden_size = impl.encoder_hidden_size;
@@ -335,7 +338,9 @@ std::vector<int> run_greedy_decoder(OpenVINOParakeet::Impl& impl,
     return {};
   }
 
-  const size_t vocab_size = impl.tokenizer.vocab_size();
+  // Use blank_id + 1 as the effective vocab size (tokens 0 through blank_id)
+  // The vocab JSON may have extra entries beyond blank, but they're not used
+  const size_t vocab_size = static_cast<size_t>(impl.runtime_cfg.blank_token_id) + 1;
   const size_t duration_head = impl.runtime_cfg.duration_bins.size();
   if (vocab_size == 0 || vocab_size + duration_head > impl.joint_output_size) {
     throw std::runtime_error("Invalid joint head configuration");
@@ -360,14 +365,14 @@ std::vector<int> run_greedy_decoder(OpenVINOParakeet::Impl& impl,
   while (frame_index < valid_frames && tokens.size() < options.max_tokens) {
     token_input.data<int32_t>()[0] = last_token;
 
-    impl.decoder_request.set_tensor("targets", token_input);
-    impl.decoder_request.set_tensor("h_in", hidden_state);
-    impl.decoder_request.set_tensor("c_in", cell_state);
+    impl.decoder_request.set_input_tensor(0, token_input);  // targets
+    impl.decoder_request.set_input_tensor(1, hidden_state);  // h_in
+    impl.decoder_request.set_input_tensor(2, cell_state);  // c_in
     impl.decoder_request.infer();
 
-    const auto decoder_output = impl.decoder_request.get_output_tensor("decoder_output");
-    const auto next_hidden = impl.decoder_request.get_output_tensor("h_out");
-    const auto next_cell = impl.decoder_request.get_output_tensor("c_out");
+    const auto decoder_output = impl.decoder_request.get_output_tensor(0);  // decoder_output
+    const auto next_hidden = impl.decoder_request.get_output_tensor(1);  // h_out
+    const auto next_cell = impl.decoder_request.get_output_tensor(2);  // c_out
 
     std::memcpy(decoder_step.data<float>(), decoder_output.data<float>(), decoder_output.get_byte_size());
 
@@ -377,11 +382,11 @@ std::vector<int> run_greedy_decoder(OpenVINOParakeet::Impl& impl,
       encoder_step.data<float>()[channel] = encoder.data[offset];
     }
 
-    impl.joint_request.set_tensor("encoder_outputs", encoder_step);
-    impl.joint_request.set_tensor("decoder_outputs", decoder_step);
+    impl.joint_request.set_input_tensor(0, encoder_step);  // encoder_outputs
+    impl.joint_request.set_input_tensor(1, decoder_step);  // decoder_outputs
     impl.joint_request.infer();
 
-    const auto logits_tensor = impl.joint_request.get_output_tensor("logits");
+    const auto logits_tensor = impl.joint_request.get_output_tensor(0);  // logits
     const float* logits = logits_tensor.data<float>();
 
     size_t best_token = 0;
@@ -433,8 +438,62 @@ InferenceResult OpenVINOParakeet::infer(const AudioSegment& segment, const Segme
   {
     std::lock_guard<std::mutex> lock(impl_->request_guard);
     const auto mel = run_preprocessor(*impl_, segment);
-    const auto encoder = run_encoder(*impl_, mel);
-    token_ids = run_greedy_decoder(*impl_, encoder, options);
+
+    // Check if audio is longer than encoder can handle
+    const size_t max_frames = impl_->encoder_expected_frames;
+
+    if (mel.frames <= max_frames) {
+      // Short audio - process normally
+      const auto encoder = run_encoder(*impl_, mel);
+      token_ids = run_greedy_decoder(*impl_, encoder, options);
+    } else {
+      // Long audio - process in overlapping chunks
+      std::cerr << "[INFO] Audio too long (" << mel.frames << " frames), processing in chunks\n";
+
+      // Use overlap to avoid losing audio at boundaries
+      const size_t overlap_frames = 300;  // ~3 seconds of overlap
+      const size_t stride = max_frames - overlap_frames;
+
+      size_t offset = 0;
+      size_t chunk_idx = 0;
+
+      while (offset < mel.frames) {
+        // Extract chunk with overlap
+        const size_t chunk_size = std::min(max_frames, mel.frames - offset);
+
+        MelFeatures chunk;
+        chunk.frames = chunk_size;
+        chunk.data.resize(128 * chunk_size);
+
+        // Copy mel data for this chunk (mel is stored as [mel_bins][time])
+        for (size_t bin = 0; bin < 128; ++bin) {
+          const float* src = mel.data.data() + bin * mel.frames + offset;
+          float* dst = chunk.data.data() + bin * chunk_size;
+          std::copy(src, src + chunk_size, dst);
+        }
+
+        std::cerr << "[INFO] Processing chunk " << chunk_idx
+                  << " at offset " << offset
+                  << " (size: " << chunk_size << " frames)\n";
+
+        const auto encoder = run_encoder(*impl_, chunk);
+        auto chunk_tokens = run_greedy_decoder(*impl_, encoder, options);
+
+        // Append all tokens from each chunk
+        // Accept potential duplicates at boundaries - better than losing content
+        token_ids.insert(token_ids.end(), chunk_tokens.begin(), chunk_tokens.end());
+
+        chunk_idx++;
+
+        // Check if we're done
+        if (offset + chunk_size >= mel.frames) {
+          break;  // Processed all frames
+        }
+
+        // Move forward by stride (not full chunk size) to create overlap
+        offset += stride;
+      }
+    }
   }
 
   const auto end = std::chrono::steady_clock::now();

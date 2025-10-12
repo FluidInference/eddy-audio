@@ -11,7 +11,7 @@ option(EDDY_BUILD_CSHARP "Build C# bindings" OFF)
 
 if(EDDY_ENABLE_OPENVINO)
   find_package(OpenVINO REQUIRED COMPONENTS Runtime)
-  find_package(OpenVINOGenAI REQUIRED)
+  find_package(OpenVINOGenAI)  # Optional - only needed for Whisper
 endif()
 
 add_library(eddy STATIC)
@@ -27,16 +27,28 @@ target_sources(eddy
   PRIVATE
     src/core/runtime.cpp
     src/core/model.cpp
+    src/core/cache.cpp
     src/backends/openvino_backend.cpp
 )
+
+# Link Windows shell library for cache directory access
+if(WIN32)
+  target_link_libraries(eddy PRIVATE Shell32)
+endif()
 
 if(EDDY_ENABLE_OPENVINO)
   target_sources(eddy PRIVATE
     src/pipelines/whisper_pipeline.cpp
     src/pipelines/audio_utils.cpp
+    src/models/parakeet/parakeet_openvino.cpp
   )
   target_compile_definitions(eddy PUBLIC EDDY_WITH_OPENVINO=1)
-  target_link_libraries(eddy PUBLIC openvino::runtime openvino::genai)
+  target_link_libraries(eddy PUBLIC openvino::runtime)
+
+  # Link GenAI only if found (for Whisper support)
+  if(OpenVINOGenAI_FOUND)
+    target_link_libraries(eddy PUBLIC openvino::genai)
+  endif()
 endif()
 
 install(TARGETS eddy EXPORT eddyTargets ARCHIVE DESTINATION lib LIBRARY DESTINATION lib RUNTIME DESTINATION bin)
