@@ -178,6 +178,74 @@ float calculate_cer(const std::string& hypothesis, const std::string& reference)
 }
 
 // ============================================================================
+// LibriSpeech Dataset Download
+// ============================================================================
+
+bool download_librispeech_dataset(const fs::path& dataset_parent_dir) {
+    const std::string url = "https://www.openslr.org/resources/12/test-clean.tar.gz";
+    const fs::path tar_path = dataset_parent_dir / "test-clean.tar.gz";
+    const fs::path test_clean_dir = dataset_parent_dir / "LibriSpeech" / "test-clean";
+
+    // Check if already downloaded
+    if (fs::exists(test_clean_dir) && !fs::is_empty(test_clean_dir)) {
+        std::cout << "Dataset already exists at: " << test_clean_dir << "\n";
+        return true;
+    }
+
+    std::cout << "\nLibriSpeech test-clean dataset not found. Downloading...\n";
+    std::cout << "URL: " << url << "\n";
+    std::cout << "Size: ~350 MB\n\n";
+
+    // Create directory
+    fs::create_directories(dataset_parent_dir);
+
+    // Download using curl
+    std::cout << "Downloading (this may take several minutes)...\n";
+    std::string curl_cmd = "curl -L --progress-bar \"" + url + "\" -o \"" + tar_path.string() + "\"";
+
+    int ret = std::system(curl_cmd.c_str());
+    if (ret != 0) {
+        std::cerr << "ERROR: Download failed. Please check your internet connection.\n";
+        std::cerr << "You can also manually download from:\n";
+        std::cerr << "  " << url << "\n";
+        std::cerr << "And extract to: " << dataset_parent_dir << "\n";
+        return false;
+    }
+
+    std::cout << "[OK] Downloaded " << (fs::file_size(tar_path) / (1024 * 1024)) << " MB\n\n";
+
+    // Extract tar.gz
+    std::cout << "Extracting archive...\n";
+
+#ifdef _WIN32
+    // Windows: Use tar (available in Windows 10+)
+    std::string tar_cmd = "tar -xzf \"" + tar_path.string() + "\" -C \"" + dataset_parent_dir.string() + "\"";
+#else
+    // Unix: Use tar
+    std::string tar_cmd = "tar -xzf \"" + tar_path.string() + "\" -C \"" + dataset_parent_dir.string() + "\"";
+#endif
+
+    ret = std::system(tar_cmd.c_str());
+    if (ret != 0) {
+        std::cerr << "ERROR: Extraction failed.\n";
+        std::cerr << "Please manually extract: " << tar_path << "\n";
+        return false;
+    }
+
+    std::cout << "[OK] Extracted to: " << test_clean_dir << "\n\n";
+
+    // Clean up tar file
+    try {
+        fs::remove(tar_path);
+        std::cout << "[OK] Cleaned up archive file\n\n";
+    } catch (...) {
+        // Ignore cleanup errors
+    }
+
+    return true;
+}
+
+// ============================================================================
 // LibriSpeech Dataset Loading
 // ============================================================================
 
@@ -376,14 +444,18 @@ int main(int argc, char* argv[]) {
     std::cout << std::string(80, '=') << "\n\n";
 
     try {
-        // Find dataset directory
-        fs::path dataset_dir = fs::path(std::getenv("LOCALAPPDATA")) / "eddy" / "datasets" / "LibriSpeech" / "test-clean";
+        // Setup dataset paths
+        fs::path dataset_parent = fs::path(std::getenv("LOCALAPPDATA")) / "eddy" / "datasets";
+        fs::path dataset_dir = dataset_parent / "LibriSpeech" / "test-clean";
 
-        if (!fs::exists(dataset_dir)) {
-            std::cerr << "ERROR: LibriSpeech test-clean not found at: " << dataset_dir << "\n";
-            std::cerr << "Please run the Python benchmark first to download the dataset:\n";
-            std::cerr << "  python benchmark_librispeech.py --max-files 5\n";
-            return 1;
+        // Download dataset if needed
+        if (!fs::exists(dataset_dir) || fs::is_empty(dataset_dir)) {
+            if (!download_librispeech_dataset(dataset_parent)) {
+                std::cerr << "\nERROR: Failed to download dataset.\n";
+                return 1;
+            }
+        } else {
+            std::cout << "Using existing dataset at: " << dataset_dir << "\n\n";
         }
 
         // Load test files
