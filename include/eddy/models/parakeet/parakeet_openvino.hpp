@@ -74,6 +74,8 @@ public:
 
   InferenceResult infer(const AudioSegment& segment, const SegmentOptions& options) override;
 
+  std::string decode_tokens(const std::vector<int>& token_ids) override;
+
   void warmup();
 
   // Public to allow helper functions in implementation file

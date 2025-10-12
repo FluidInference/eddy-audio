@@ -7,4 +7,7 @@ target_link_libraries(parakeet_cli PRIVATE eddy)
 add_executable(benchmark_librispeech benchmark_librispeech.cpp)
 target_link_libraries(benchmark_librispeech PRIVATE eddy)
 
-install(TARGETS whisper_example parakeet_cli benchmark_librispeech DESTINATION bin)
+add_executable(streaming_example streaming_example.cpp)
+target_link_libraries(streaming_example PRIVATE eddy)
+
+install(TARGETS whisper_example parakeet_cli benchmark_librispeech streaming_example DESTINATION bin)

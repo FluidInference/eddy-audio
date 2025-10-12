@@ -63,6 +63,11 @@ class IParakeetModel {
 public:
   virtual ~IParakeetModel() = default;
   virtual InferenceResult infer(const AudioSegment& segment, const SegmentOptions& options) = 0;
+
+  /// Decode token IDs to text using the tokenizer
+  /// @param token_ids Vector of token IDs to decode
+  /// @return Decoded text string
+  virtual std::string decode_tokens(const std::vector<int>& token_ids) = 0;
 };
 
 }  // namespace eddy::parakeet

@@ -41,6 +41,7 @@ if(EDDY_ENABLE_OPENVINO)
     src/pipelines/whisper_pipeline.cpp
     src/pipelines/audio_utils.cpp
     src/models/parakeet/parakeet_openvino.cpp
+    src/streaming/buffered_streaming_asr.cpp
   )
   target_compile_definitions(eddy PUBLIC EDDY_WITH_OPENVINO=1)
   target_link_libraries(eddy PUBLIC openvino::runtime)
