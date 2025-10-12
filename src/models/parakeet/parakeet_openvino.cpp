@@ -330,12 +330,18 @@ EncoderActivations run_encoder(OpenVINOParakeet::Impl& impl, const MelFeatures& 
   return activations;
 }
 
-std::vector<int> run_greedy_decoder(OpenVINOParakeet::Impl& impl,
-                                    const EncoderActivations& encoder,
-                                    const SegmentOptions& options) {
+struct DecoderResult {
+  std::vector<int> tokens;
+  std::vector<TokenTiming> timings;
+};
+
+DecoderResult run_greedy_decoder(OpenVINOParakeet::Impl& impl,
+                                 const EncoderActivations& encoder,
+                                 const SegmentOptions& options,
+                                 DecoderState& state) {
   const size_t valid_frames = std::min(encoder.valid_frames, encoder.time_steps);
   if (valid_frames == 0) {
-    return {};
+    return {{}, {}};
   }
 
   // Use blank_id + 1 as the effective vocab size (tokens 0 through blank_id)
@@ -348,19 +354,37 @@ std::vector<int> run_greedy_decoder(OpenVINOParakeet::Impl& impl,
 
   ov::Tensor encoder_step(ov::element::f32, {1, 1, impl.encoder_hidden_size});
   ov::Tensor decoder_step(ov::element::f32, {1, 1, impl.decoder_hidden_size});
+
+  // Initialize or reuse LSTM state
   ov::Tensor hidden_state(ov::element::f32, {2, 1, impl.decoder_hidden_size});
   ov::Tensor cell_state(ov::element::f32, {2, 1, impl.decoder_hidden_size});
-  std::fill(hidden_state.data<float>(), hidden_state.data<float>() + hidden_state.get_size(), 0.0F);
-  std::fill(cell_state.data<float>(), cell_state.data<float>() + cell_state.get_size(), 0.0F);
+
+  if (state.has_lstm_state) {
+    // Continue from previous chunk's LSTM state
+    std::cerr << "[INFO] Continuing with preserved LSTM state from previous chunk\n";
+    std::memcpy(hidden_state.data<float>(), state.hidden_state.data<float>(), hidden_state.get_byte_size());
+    std::memcpy(cell_state.data<float>(), state.cell_state.data<float>(), cell_state.get_byte_size());
+  } else {
+    // First chunk: zero-initialize LSTM state
+    std::cerr << "[INFO] Starting with fresh LSTM state (first chunk)\n";
+    std::fill(hidden_state.data<float>(), hidden_state.data<float>() + hidden_state.get_size(), 0.0F);
+    std::fill(cell_state.data<float>(), cell_state.data<float>() + cell_state.get_size(), 0.0F);
+  }
+
+  // Use last token from previous chunk if available, otherwise blank
+  int starting_token = state.last_token.value_or(impl.runtime_cfg.blank_token_id);
+  std::cerr << "[INFO] Starting decoder with token: " << starting_token << "\n";
 
   ov::Tensor token_input(ov::element::i32, {1, 1});
-  token_input.data<int32_t>()[0] = impl.runtime_cfg.blank_token_id;
+  token_input.data<int32_t>()[0] = starting_token;
 
   std::vector<int> tokens;
+  std::vector<TokenTiming> timings;
   tokens.reserve(options.max_tokens);
+  timings.reserve(options.max_tokens);
 
   size_t frame_index = 0;
-  int last_token = impl.runtime_cfg.blank_token_id;
+  int last_token = starting_token;
 
   while (frame_index < valid_frames && tokens.size() < options.max_tokens) {
     token_input.data<int32_t>()[0] = last_token;
@@ -398,6 +422,13 @@ std::vector<int> run_greedy_decoder(OpenVINOParakeet::Impl& impl,
       }
     }
 
+    // Apply softmax to token logits to get probability
+    float token_sum_exp = 0.0F;
+    for (size_t i = 0; i < vocab_size; ++i) {
+      token_sum_exp += std::exp(logits[i]);
+    }
+    float token_confidence = std::exp(best_token_score) / token_sum_exp;
+
     size_t best_duration_idx = 0;
     float best_duration_score = logits[vocab_size];
     for (size_t i = 1; i < duration_head; ++i) {
@@ -414,17 +445,44 @@ std::vector<int> run_greedy_decoder(OpenVINOParakeet::Impl& impl,
     }
 
     const bool is_blank = static_cast<int>(best_token) == impl.runtime_cfg.blank_token_id;
-    frame_index = std::min(frame_index + static_cast<size_t>(duration), valid_frames);
 
     if (!is_blank) {
-      tokens.push_back(static_cast<int>(best_token));
-      last_token = static_cast<int>(best_token);
+      const int token_id = static_cast<int>(best_token);
+      tokens.push_back(token_id);
+
+      // Record timing information
+      timings.push_back({
+        .token_id = token_id,
+        .frame_index = frame_index,
+        .confidence = token_confidence
+      });
+
+      last_token = token_id;
       std::memcpy(hidden_state.data<float>(), next_hidden.data<float>(), next_hidden.get_byte_size());
       std::memcpy(cell_state.data<float>(), next_cell.data<float>(), next_cell.get_byte_size());
     }
+
+    frame_index = std::min(frame_index + static_cast<size_t>(duration), valid_frames);
   }
 
-  return tokens;
+  // Save final LSTM state and last token for next chunk
+  // Always allocate fresh tensors for state (OpenVINO tensors can't be default-constructed safely)
+  state.hidden_state = ov::Tensor(ov::element::f32, {2, 1, impl.decoder_hidden_size});
+  state.cell_state = ov::Tensor(ov::element::f32, {2, 1, impl.decoder_hidden_size});
+
+  std::memcpy(state.hidden_state.data<float>(), hidden_state.data<float>(), hidden_state.get_byte_size());
+  std::memcpy(state.cell_state.data<float>(), cell_state.data<float>(), cell_state.get_byte_size());
+  state.has_lstm_state = true;
+
+  if (!tokens.empty()) {
+    state.last_token = tokens.back();
+    std::cerr << "[INFO] Saved final LSTM state and last token: " << *state.last_token << "\n";
+  } else {
+    state.last_token = starting_token;
+    std::cerr << "[INFO] No tokens emitted, keeping starting token: " << starting_token << "\n";
+  }
+
+  return {std::move(tokens), std::move(timings)};
 }
 
 }  // namespace
@@ -435,6 +493,7 @@ InferenceResult OpenVINOParakeet::infer(const AudioSegment& segment, const Segme
   const auto start = std::chrono::steady_clock::now();
 
   std::vector<int> token_ids;
+  std::vector<TokenTiming> all_timings;
   {
     std::lock_guard<std::mutex> lock(impl_->request_guard);
     const auto mel = run_preprocessor(*impl_, segment);
@@ -444,8 +503,11 @@ InferenceResult OpenVINOParakeet::infer(const AudioSegment& segment, const Segme
 
     if (mel.frames <= max_frames) {
       // Short audio - process normally
+      DecoderState state;  // Fresh state for single-chunk audio
       const auto encoder = run_encoder(*impl_, mel);
-      token_ids = run_greedy_decoder(*impl_, encoder, options);
+      auto result = run_greedy_decoder(*impl_, encoder, options, state);
+      token_ids = std::move(result.tokens);
+      all_timings = std::move(result.timings);
     } else {
       // Long audio - process in overlapping chunks
       std::cerr << "[INFO] Audio too long (" << mel.frames << " frames), processing in chunks\n";
@@ -453,6 +515,9 @@ InferenceResult OpenVINOParakeet::infer(const AudioSegment& segment, const Segme
       // Use overlap to avoid losing audio at boundaries
       const size_t overlap_frames = 300;  // ~3 seconds of overlap
       const size_t stride = max_frames - overlap_frames;
+
+      // Persistent decoder state across chunks for full state continuity
+      DecoderState decoder_state;
 
       size_t offset = 0;
       size_t chunk_idx = 0;
@@ -477,11 +542,79 @@ InferenceResult OpenVINOParakeet::infer(const AudioSegment& segment, const Segme
                   << " (size: " << chunk_size << " frames)\n";
 
         const auto encoder = run_encoder(*impl_, chunk);
-        auto chunk_tokens = run_greedy_decoder(*impl_, encoder, options);
+        // Pass persistent decoder_state - it will be updated with final state after decoding
+        auto decoder_result = run_greedy_decoder(*impl_, encoder, options, decoder_state);
+        auto& chunk_tokens = decoder_result.tokens;
+        auto& chunk_timings = decoder_result.timings;
 
-        // Append all tokens from each chunk
-        // Accept potential duplicates at boundaries - better than losing content
-        token_ids.insert(token_ids.end(), chunk_tokens.begin(), chunk_tokens.end());
+        if (chunk_idx == 0) {
+          // First chunk: keep all tokens and timings
+          token_ids = std::move(chunk_tokens);
+          all_timings = std::move(chunk_timings);
+        } else {
+          // Subsequent chunks: use deduplication as safety net (FluidAudio approach)
+          // Even with LSTM state continuity, decoder state reset at chunk boundaries
+          // can cause some duplicates, so we apply deduplication as a safety net
+          size_t skip_count = 0;
+
+          std::cerr << "[DEBUG] Last 10 tokens of prev chunk: ";
+          for (size_t i = std::max(size_t(0), token_ids.size() - 10); i < token_ids.size(); ++i) {
+            std::cerr << token_ids[i] << " ";
+          }
+          std::cerr << "\n[DEBUG] First 10 tokens of curr chunk: ";
+          for (size_t i = 0; i < std::min(size_t(10), chunk_tokens.size()); ++i) {
+            std::cerr << chunk_tokens[i] << " ";
+          }
+          std::cerr << "\n";
+
+          // Search for duplicate sequences (safety net for state continuity)
+          const size_t curr_search_window = std::min(size_t(15), chunk_tokens.size());
+          const size_t prev_tail_window = std::min(size_t(20), token_ids.size());
+          const size_t min_match_len = 3;
+
+          size_t best_skip_count = 0;
+          size_t best_match_len = 0;
+
+          for (size_t curr_pos = 0; curr_pos < curr_search_window && best_skip_count == 0; ++curr_pos) {
+            for (size_t prev_offset = 0; prev_offset < prev_tail_window; ++prev_offset) {
+              const size_t max_match_len = std::min({
+                size_t(15),
+                token_ids.size() - prev_offset,
+                chunk_tokens.size() - curr_pos,
+                prev_tail_window - prev_offset
+              });
+
+              for (size_t match_len = max_match_len; match_len >= min_match_len; --match_len) {
+                bool match = true;
+                const size_t prev_start = token_ids.size() - prev_tail_window + prev_offset;
+
+                for (size_t i = 0; i < match_len; ++i) {
+                  if (token_ids[prev_start + i] != chunk_tokens[curr_pos + i]) {
+                    match = false;
+                    break;
+                  }
+                }
+
+                if (match && match_len > best_match_len) {
+                  best_match_len = match_len;
+                  best_skip_count = curr_pos + match_len;
+                  std::cerr << "[INFO] Found " << match_len << " duplicate tokens at pos " << curr_pos
+                            << ", skipping " << best_skip_count << " tokens (safety net)\n";
+                  break;
+                }
+              }
+            }
+          }
+
+          skip_count = best_skip_count;
+          if (skip_count == 0) {
+            std::cerr << "[INFO] No duplicates found - LSTM state continuity working perfectly!\n";
+          }
+
+          // Append tokens and timings, skipping duplicates
+          token_ids.insert(token_ids.end(), chunk_tokens.begin() + skip_count, chunk_tokens.end());
+          all_timings.insert(all_timings.end(), chunk_timings.begin() + skip_count, chunk_timings.end());
+        }
 
         chunk_idx++;
 
@@ -503,6 +636,18 @@ InferenceResult OpenVINOParakeet::infer(const AudioSegment& segment, const Segme
   result.token_ids = std::move(token_ids);
   result.text = impl_->tokenizer.decode(result.token_ids);
   result.latency_ms = latency_ms;
+  result.token_timings = std::move(all_timings);
+
+  // Calculate overall confidence (average of token confidences)
+  if (!result.token_timings.empty()) {
+    float sum = 0.0F;
+    for (const auto& timing : result.token_timings) {
+      sum += timing.confidence;
+    }
+    result.overall_confidence = sum / static_cast<float>(result.token_timings.size());
+  } else {
+    result.overall_confidence = 0.1F;  // FluidAudio default for empty transcription
+  }
 
   return result;
 }

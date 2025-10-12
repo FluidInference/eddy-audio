@@ -1,10 +1,13 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "eddy/backends/openvino_backend.hpp"
 #include "eddy/models/parakeet/parakeet.hpp"
+
+#include <openvino/openvino.hpp>
 
 namespace ov {
 class infer_request;
@@ -12,6 +15,48 @@ class CompiledModel;
 }
 
 namespace eddy::parakeet {
+
+/// Decoder state for maintaining context across audio chunks
+/// Enables state continuity similar to FluidAudio's TdtDecoderState
+struct DecoderState {
+    /// Last decoded token from previous chunk
+    /// Used for maintaining linguistic context across chunk boundaries
+    std::optional<int> last_token;
+
+    /// Time jump tracking for chunk alignment
+    /// Represents how far the decoder progressed beyond encoder frames
+    /// - nullopt: First chunk or no streaming context
+    /// - negative: Decoder hasn't processed all encoder frames yet
+    /// - zero: Decoder exactly at the end of encoder frames
+    /// - positive: Decoder has advanced beyond current encoder frames
+    std::optional<int> time_jump;
+
+    /// LSTM hidden state (shape: [2, 1, decoder_hidden_size])
+    /// Preserves the decoder's internal linguistic context across chunks
+    ov::Tensor hidden_state;
+
+    /// LSTM cell state (shape: [2, 1, decoder_hidden_size])
+    /// Preserves the decoder's internal memory across chunks
+    ov::Tensor cell_state;
+
+    /// Flag indicating whether LSTM state tensors contain valid data
+    /// false = use zero-initialized state (first chunk)
+    /// true = use preserved state from previous chunk
+    bool has_lstm_state = false;
+
+    /// Reset all state to initial values
+    void reset() {
+        last_token.reset();
+        time_jump.reset();
+        has_lstm_state = false;
+        // Note: Tensors themselves are not deallocated, just marked as invalid
+    }
+
+    /// Check if state contains any data
+    [[nodiscard]] bool has_state() const {
+        return last_token.has_value() || time_jump.has_value() || has_lstm_state;
+    }
+};
 
 // Forward declaration
 class OpenVINOParakeet;

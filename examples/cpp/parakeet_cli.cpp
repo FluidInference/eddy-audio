@@ -159,11 +159,32 @@ int main(int argc, char* argv[]) {
 
         std::cout << "Metrics:\n";
         std::cout << "  Tokens:           " << result.token_ids.size() << "\n";
+        std::cout << "  Confidence:       " << std::fixed << std::setprecision(1)
+                  << (result.overall_confidence * 100.0f) << "%\n";
         std::cout << "  Processing time:  " << duration_ms << " ms\n";
         std::cout << "  Audio duration:   " << std::fixed << std::setprecision(2)
                   << audio_duration << " s\n";
         std::cout << "  Real-time factor: " << std::fixed << std::setprecision(1)
                   << rtfx << "x\n\n";
+
+        // Show token timings (first 10 tokens as sample)
+        if (!result.token_timings.empty()) {
+            std::cout << "Token Timings (first 10):\n";
+            const size_t num_to_show = std::min(size_t(10), result.token_timings.size());
+            for (size_t i = 0; i < num_to_show; ++i) {
+                const auto& timing = result.token_timings[i];
+                // Convert frame_index to seconds (frame * 0.08)
+                float time_seconds = timing.frame_index * 0.08f;
+                std::cout << "  " << std::setw(3) << i+1 << ". "
+                          << "t=" << std::fixed << std::setprecision(2) << std::setw(5) << time_seconds << "s "
+                          << "conf=" << std::setprecision(1) << std::setw(4) << (timing.confidence * 100.0f) << "% "
+                          << "token_id=" << timing.token_id << "\n";
+            }
+            if (result.token_timings.size() > num_to_show) {
+                std::cout << "  ... and " << (result.token_timings.size() - num_to_show) << " more tokens\n";
+            }
+            std::cout << "\n";
+        }
 
         // Performance assessment
         if (rtfx >= 10.0f) {
