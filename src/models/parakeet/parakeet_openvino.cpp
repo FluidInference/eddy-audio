@@ -193,6 +193,11 @@ OpenVINOParakeet::OpenVINOParakeet(std::shared_ptr<eddy::OpenVINOBackend> backen
 
 OpenVINOParakeet::~OpenVINOParakeet() = default;
 
+std::string OpenVINOParakeet::decode_tokens(const std::vector<int>& token_ids) {
+  ensure_compiled_model();
+  return impl_->tokenizer.decode(token_ids);
+}
+
 void OpenVINOParakeet::ensure_compiled_model() {
   std::call_once(impl_->compile_once, [this]() {
     auto& core = impl_->backend->core();
@@ -386,7 +391,16 @@ DecoderResult run_greedy_decoder(OpenVINOParakeet::Impl& impl,
   size_t frame_index = 0;
   int last_token = starting_token;
 
+  // TDT statistics
+  size_t total_joint_calls = 0;
+  size_t decoder_runs = 0;
+  size_t blank_tokens = 0;
+  size_t non_blank_tokens = 0;
+
+  // Outer loop: runs decoder, then enters inner loop for blank processing
   while (frame_index < valid_frames && tokens.size() < options.max_tokens) {
+    // Run decoder LSTM with current token
+    decoder_runs++;
     token_input.data<int32_t>()[0] = last_token;
 
     impl.decoder_request.set_input_tensor(0, token_input);  // targets
@@ -398,72 +412,105 @@ DecoderResult run_greedy_decoder(OpenVINOParakeet::Impl& impl,
     const auto next_hidden = impl.decoder_request.get_output_tensor(1);  // h_out
     const auto next_cell = impl.decoder_request.get_output_tensor(2);  // c_out
 
+    // Store decoder output - this will be REUSED in inner loop
     std::memcpy(decoder_step.data<float>(), decoder_output.data<float>(), decoder_output.get_byte_size());
 
-    // Extract encoder frame for current timestep
-    for (size_t channel = 0; channel < impl.encoder_hidden_size; ++channel) {
-      const size_t offset = channel * encoder.time_steps + frame_index;
-      encoder_step.data<float>()[channel] = encoder.data[offset];
-    }
+    // TDT Inner Loop: Process consecutive blank tokens without re-running decoder
+    // This is the key optimization - decoder output is intentionally reused
+    // because blank tokens (silence) shouldn't change language model context
+    bool advance_mask = true;
+    while (advance_mask && frame_index < valid_frames && tokens.size() < options.max_tokens) {
+      total_joint_calls++;
 
-    impl.joint_request.set_input_tensor(0, encoder_step);  // encoder_outputs
-    impl.joint_request.set_input_tensor(1, decoder_step);  // decoder_outputs
-    impl.joint_request.infer();
-
-    const auto logits_tensor = impl.joint_request.get_output_tensor(0);  // logits
-    const float* logits = logits_tensor.data<float>();
-
-    size_t best_token = 0;
-    float best_token_score = logits[0];
-    for (size_t i = 1; i < vocab_size; ++i) {
-      if (logits[i] > best_token_score) {
-        best_token_score = logits[i];
-        best_token = i;
+      // Extract encoder frame for current timestep
+      for (size_t channel = 0; channel < impl.encoder_hidden_size; ++channel) {
+        const size_t offset = channel * encoder.time_steps + frame_index;
+        encoder_step.data<float>()[channel] = encoder.data[offset];
       }
-    }
 
-    // Apply softmax to token logits to get probability
-    float token_sum_exp = 0.0F;
-    for (size_t i = 0; i < vocab_size; ++i) {
-      token_sum_exp += std::exp(logits[i]);
-    }
-    float token_confidence = std::exp(best_token_score) / token_sum_exp;
+      // Run joint network with encoder frame + REUSED decoder output
+      impl.joint_request.set_input_tensor(0, encoder_step);  // encoder_outputs
+      impl.joint_request.set_input_tensor(1, decoder_step);  // decoder_outputs (REUSED!)
+      impl.joint_request.infer();
 
-    size_t best_duration_idx = 0;
-    float best_duration_score = logits[vocab_size];
-    for (size_t i = 1; i < duration_head; ++i) {
-      const float score = logits[vocab_size + i];
-      if (score > best_duration_score) {
-        best_duration_score = score;
-        best_duration_idx = i;
+      const auto logits_tensor = impl.joint_request.get_output_tensor(0);  // logits
+      const float* logits = logits_tensor.data<float>();
+
+      // Find best token
+      size_t best_token = 0;
+      float best_token_score = logits[0];
+      for (size_t i = 1; i < vocab_size; ++i) {
+        if (logits[i] > best_token_score) {
+          best_token_score = logits[i];
+          best_token = i;
+        }
       }
+
+      // Calculate confidence
+      float token_sum_exp = 0.0F;
+      for (size_t i = 0; i < vocab_size; ++i) {
+        token_sum_exp += std::exp(logits[i]);
+      }
+      float token_confidence = std::exp(best_token_score) / token_sum_exp;
+
+      // Find best duration
+      size_t best_duration_idx = 0;
+      float best_duration_score = logits[vocab_size];
+      for (size_t i = 1; i < duration_head; ++i) {
+        const float score = logits[vocab_size + i];
+        if (score > best_duration_score) {
+          best_duration_score = score;
+          best_duration_idx = i;
+        }
+      }
+
+      int duration = impl.runtime_cfg.duration_bins[best_duration_idx];
+      if (duration <= 0) {
+        duration = 1;  // Always advance at least 1 frame
+      }
+
+      const bool is_blank = static_cast<int>(best_token) == impl.runtime_cfg.blank_token_id;
+
+      if (!is_blank) {
+        // Non-blank token: emit it and exit inner loop
+        non_blank_tokens++;
+        const int token_id = static_cast<int>(best_token);
+        tokens.push_back(token_id);
+
+        // Record timing information
+        timings.push_back({
+          .token_id = token_id,
+          .frame_index = frame_index,
+          .confidence = token_confidence
+        });
+
+        last_token = token_id;
+        // Update LSTM state with new token's context
+        std::memcpy(hidden_state.data<float>(), next_hidden.data<float>(), next_hidden.get_byte_size());
+        std::memcpy(cell_state.data<float>(), next_cell.data<float>(), next_cell.get_byte_size());
+
+        advance_mask = false;  // Exit inner loop - will run decoder again
+      } else {
+        // Blank token: continue inner loop without updating decoder
+        blank_tokens++;
+        advance_mask = true;  // Continue inner loop
+      }
+
+      // Advance frame index by predicted duration
+      frame_index = std::min(frame_index + static_cast<size_t>(duration), valid_frames);
     }
-
-    int duration = impl.runtime_cfg.duration_bins[best_duration_idx];
-    if (duration <= 0) {
-      duration = 1;
-    }
-
-    const bool is_blank = static_cast<int>(best_token) == impl.runtime_cfg.blank_token_id;
-
-    if (!is_blank) {
-      const int token_id = static_cast<int>(best_token);
-      tokens.push_back(token_id);
-
-      // Record timing information
-      timings.push_back({
-        .token_id = token_id,
-        .frame_index = frame_index,
-        .confidence = token_confidence
-      });
-
-      last_token = token_id;
-      std::memcpy(hidden_state.data<float>(), next_hidden.data<float>(), next_hidden.get_byte_size());
-      std::memcpy(cell_state.data<float>(), next_cell.data<float>(), next_cell.get_byte_size());
-    }
-
-    frame_index = std::min(frame_index + static_cast<size_t>(duration), valid_frames);
   }
+
+  // Log TDT statistics
+  std::cerr << "[TDT Stats] Joint network calls: " << total_joint_calls << "\n";
+  std::cerr << "[TDT Stats] Decoder runs: " << decoder_runs
+            << " (" << (total_joint_calls > 0 ? (decoder_runs * 100 / total_joint_calls) : 0) << "% of joint calls)\n";
+  std::cerr << "[TDT Stats] Tokens predicted:\n";
+  std::cerr << "[TDT Stats]   - Non-blank: " << non_blank_tokens << "\n";
+  std::cerr << "[TDT Stats]   - Blank: " << blank_tokens
+            << " (" << ((non_blank_tokens + blank_tokens) > 0 ? (blank_tokens * 100 / (non_blank_tokens + blank_tokens)) : 0) << "%)\n";
+  std::cerr << "[TDT Stats] Inner loop saved " << (total_joint_calls - decoder_runs)
+            << " decoder calls (" << (total_joint_calls > 0 ? ((total_joint_calls - decoder_runs) * 100 / total_joint_calls) : 0) << "% reduction)\n";
 
   // Save final LSTM state and last token for next chunk
   // Always allocate fresh tensors for state (OpenVINO tensors can't be default-constructed safely)
