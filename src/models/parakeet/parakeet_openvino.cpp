@@ -394,26 +394,48 @@ DecoderResult run_greedy_decoder(OpenVINOParakeet::Impl& impl,
   // TDT statistics
   size_t total_joint_calls = 0;
   size_t decoder_runs = 0;
+  size_t cache_hits = 0;
   size_t blank_tokens = 0;
   size_t non_blank_tokens = 0;
 
   // Outer loop: runs decoder, then enters inner loop for blank processing
   while (frame_index < valid_frames && tokens.size() < options.max_tokens) {
-    // Run decoder LSTM with current token
-    decoder_runs++;
-    token_input.data<int32_t>()[0] = last_token;
+    // Check if we can use cached decoder output
+    ov::Tensor decoder_output;
+    ov::Tensor next_hidden;
+    ov::Tensor next_cell;
 
-    impl.decoder_request.set_input_tensor(0, token_input);  // targets
-    impl.decoder_request.set_input_tensor(1, hidden_state);  // h_in
-    impl.decoder_request.set_input_tensor(2, cell_state);  // c_in
-    impl.decoder_request.infer();
+    if (state.has_cached_output && last_token == state.last_token.value_or(-1)) {
+      // CACHE HIT: Reuse cached decoder output - significant speedup!
+      cache_hits++;
+      std::memcpy(decoder_step.data<float>(), state.cached_decoder_output.data<float>(), decoder_step.get_byte_size());
+      // Keep existing LSTM state tensors
+      next_hidden = hidden_state;
+      next_cell = cell_state;
+    } else {
+      // CACHE MISS: Need to run decoder LSTM
+      decoder_runs++;
+      token_input.data<int32_t>()[0] = last_token;
 
-    const auto decoder_output = impl.decoder_request.get_output_tensor(0);  // decoder_output
-    const auto next_hidden = impl.decoder_request.get_output_tensor(1);  // h_out
-    const auto next_cell = impl.decoder_request.get_output_tensor(2);  // c_out
+      impl.decoder_request.set_input_tensor(0, token_input);  // targets
+      impl.decoder_request.set_input_tensor(1, hidden_state);  // h_in
+      impl.decoder_request.set_input_tensor(2, cell_state);  // c_in
+      impl.decoder_request.infer();
 
-    // Store decoder output - this will be REUSED in inner loop
-    std::memcpy(decoder_step.data<float>(), decoder_output.data<float>(), decoder_output.get_byte_size());
+      decoder_output = impl.decoder_request.get_output_tensor(0);  // decoder_output
+      next_hidden = impl.decoder_request.get_output_tensor(1);  // h_out
+      next_cell = impl.decoder_request.get_output_tensor(2);  // c_out
+
+      // Store decoder output for potential reuse
+      std::memcpy(decoder_step.data<float>(), decoder_output.data<float>(), decoder_output.get_byte_size());
+
+      // Cache this decoder output for next iteration
+      if (!state.cached_decoder_output) {
+        state.cached_decoder_output = ov::Tensor(ov::element::f32, {1, 1, impl.decoder_hidden_size});
+      }
+      std::memcpy(state.cached_decoder_output.data<float>(), decoder_output.data<float>(), decoder_output.get_byte_size());
+      state.has_cached_output = true;
+    }
 
     // TDT Inner Loop: Process consecutive blank tokens without re-running decoder
     // This is the key optimization - decoder output is intentionally reused
@@ -489,6 +511,9 @@ DecoderResult run_greedy_decoder(OpenVINOParakeet::Impl& impl,
         std::memcpy(hidden_state.data<float>(), next_hidden.data<float>(), next_hidden.get_byte_size());
         std::memcpy(cell_state.data<float>(), next_cell.data<float>(), next_cell.get_byte_size());
 
+        // IMPORTANT: Invalidate cache since token changed - force decoder run next iteration
+        state.has_cached_output = false;
+
         advance_mask = false;  // Exit inner loop - will run decoder again
       } else {
         // Blank token: continue inner loop without updating decoder
@@ -505,12 +530,19 @@ DecoderResult run_greedy_decoder(OpenVINOParakeet::Impl& impl,
   std::cerr << "[TDT Stats] Joint network calls: " << total_joint_calls << "\n";
   std::cerr << "[TDT Stats] Decoder runs: " << decoder_runs
             << " (" << (total_joint_calls > 0 ? (decoder_runs * 100 / total_joint_calls) : 0) << "% of joint calls)\n";
+  std::cerr << "[TDT Stats] Cache hits: " << cache_hits
+            << " (" << ((decoder_runs + cache_hits) > 0 ? (cache_hits * 100 / (decoder_runs + cache_hits)) : 0) << "% cache hit rate)\n";
   std::cerr << "[TDT Stats] Tokens predicted:\n";
   std::cerr << "[TDT Stats]   - Non-blank: " << non_blank_tokens << "\n";
   std::cerr << "[TDT Stats]   - Blank: " << blank_tokens
             << " (" << ((non_blank_tokens + blank_tokens) > 0 ? (blank_tokens * 100 / (non_blank_tokens + blank_tokens)) : 0) << "%)\n";
-  std::cerr << "[TDT Stats] Inner loop saved " << (total_joint_calls - decoder_runs)
-            << " decoder calls (" << (total_joint_calls > 0 ? ((total_joint_calls - decoder_runs) * 100 / total_joint_calls) : 0) << "% reduction)\n";
+  std::cerr << "[TDT Stats] Decoder optimization:\n";
+  std::cerr << "[TDT Stats]   - Inner loop saved: " << (total_joint_calls - decoder_runs - cache_hits)
+            << " decoder calls (" << (total_joint_calls > 0 ? ((total_joint_calls - decoder_runs - cache_hits) * 100 / total_joint_calls) : 0) << "% reduction)\n";
+  std::cerr << "[TDT Stats]   - Cache saved: " << cache_hits
+            << " additional decoder calls\n";
+  std::cerr << "[TDT Stats]   - Total saved: " << (total_joint_calls - decoder_runs)
+            << " decoder calls (" << (total_joint_calls > 0 ? ((total_joint_calls - decoder_runs) * 100 / total_joint_calls) : 0) << "% total reduction)\n";
 
   // Save final LSTM state and last token for next chunk
   // Always allocate fresh tensors for state (OpenVINO tensors can't be default-constructed safely)
@@ -524,6 +556,14 @@ DecoderResult run_greedy_decoder(OpenVINOParakeet::Impl& impl,
   if (!tokens.empty()) {
     state.last_token = tokens.back();
     std::cerr << "[INFO] Saved final LSTM state and last token: " << *state.last_token << "\n";
+
+    // Clear cache after punctuation tokens to prevent duplicates at chunk boundaries
+    // Token IDs from FluidAudio Swift implementation
+    const std::vector<int> punctuation_tokens = {7883, 7952, 7948};  // period, question, exclamation
+    if (std::find(punctuation_tokens.begin(), punctuation_tokens.end(), *state.last_token) != punctuation_tokens.end()) {
+      state.has_cached_output = false;
+      std::cerr << "[INFO] Cleared decoder cache after punctuation token\n";
+    }
   } else {
     state.last_token = starting_token;
     std::cerr << "[INFO] No tokens emitted, keeping starting token: " << starting_token << "\n";

@@ -44,11 +44,21 @@ struct DecoderState {
     /// true = use preserved state from previous chunk
     bool has_lstm_state = false;
 
+    /// Cached decoder output tensor (shape: [1, 1, decoder_hidden_size])
+    /// Reused across iterations when the token hasn't changed
+    /// Key optimization: avoids redundant LSTM computations for same token
+    ov::Tensor cached_decoder_output;
+
+    /// Flag indicating whether cached_decoder_output contains valid data
+    /// Set to true after running decoder, false when token changes
+    bool has_cached_output = false;
+
     /// Reset all state to initial values
     void reset() {
         last_token.reset();
         time_jump.reset();
         has_lstm_state = false;
+        has_cached_output = false;
         // Note: Tensors themselves are not deallocated, just marked as invalid
     }
 

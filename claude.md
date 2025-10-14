@@ -1,3 +1,41 @@
+# Claude Code Assistant Guidelines
+
+## Development Best Practices
+
+**Always Build After Code Changes:**
+- After modifying any source files, immediately build to verify compilation
+- Don't assume changes are correct without testing
+- Use appropriate build commands for the project (cmake, make, etc.)
+- Check for both compilation errors and warnings
+- Run basic tests after successful builds when applicable
+
+**Build Verification Pattern:**
+1. Make code changes
+2. Build the affected targets
+3. Verify build succeeds
+4. Test basic functionality if possible
+5. Only then report completion
+
+## Model Selection Strategy
+
+**When to use Opus 4.1:**
+- Complex queries requiring deep analysis and understanding
+- Big code changes involving multiple files or architectural decisions
+- Really hard bugs that require extensive investigation
+- Tasks requiring complex reasoning or multi-step problem solving
+- Architecture comparisons and design decisions
+
+**When to use Sonnet 4.5:**
+- Simpler tasks and straightforward implementations
+- Better for execution-focused work
+- Quick fixes and minor modifications
+- Standard debugging and testing
+- File operations and basic refactoring
+
+**Switch models with:** `/model opus` or `/model sonnet`
+
+---
+
 # Debug Notes
 
 ## Silent Execution Issue (Resolved)

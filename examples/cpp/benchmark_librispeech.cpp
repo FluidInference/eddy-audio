@@ -6,6 +6,7 @@
 #include "eddy/models/parakeet/parakeet.hpp"
 #include "eddy/models/parakeet/parakeet_openvino.hpp"
 #include "eddy/pipelines/audio_utils.hpp"
+#include "text_normalizer.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -24,42 +25,12 @@ namespace fs = std::filesystem;
 // Text Normalization and WER/CER Calculation
 // ============================================================================
 
+// Global normalizer instance
+static const eddy::TextNormalizer g_normalizer;
+
 std::string normalize_text(const std::string& text) {
-    // Lowercase
-    std::string result;
-    for (char c : text) {
-        result += std::tolower(c);
-    }
-
-    // Remove punctuation
-    std::string no_punct;
-    for (char c : result) {
-        if (std::isalnum(c) || std::isspace(c)) {
-            no_punct += c;
-        }
-    }
-
-    // Normalize whitespace
-    std::string normalized;
-    bool in_space = false;
-    for (char c : no_punct) {
-        if (std::isspace(c)) {
-            if (!in_space && !normalized.empty()) {
-                normalized += ' ';
-                in_space = true;
-            }
-        } else {
-            normalized += c;
-            in_space = false;
-        }
-    }
-
-    // Trim trailing space
-    if (!normalized.empty() && normalized.back() == ' ') {
-        normalized.pop_back();
-    }
-
-    return normalized;
+    // Use the comprehensive TextNormalizer that matches FluidAudio's approach
+    return g_normalizer.normalize(text);
 }
 
 std::vector<std::string> split_words(const std::string& text) {
@@ -341,11 +312,16 @@ struct BenchmarkResult {
     int total_words;
 };
 
-void save_results_json(const std::string& output_file, const std::vector<BenchmarkResult>& results) {
+void save_results_json(const std::string& output_file, std::vector<BenchmarkResult> results) {
     std::ofstream out(output_file);
     if (!out.is_open()) {
         throw std::runtime_error("Failed to open output file: " + output_file);
     }
+
+    // Sort results by WER from worst to best (descending order)
+    std::sort(results.begin(), results.end(), [](const BenchmarkResult& a, const BenchmarkResult& b) {
+        return a.wer > b.wer;  // Higher WER first (worst to best)
+    });
 
     // Calculate summary stats
     double total_wer = 0.0, total_cer = 0.0;
@@ -363,20 +339,23 @@ void save_results_json(const std::string& output_file, const std::vector<Benchma
     float avg_wer = results.empty() ? 0.0f : total_wer / results.size();
     float avg_cer = results.empty() ? 0.0f : total_cer / results.size();
 
-    // Calculate median WER
+    // Calculate median WER (need to sort for median)
     std::sort(wer_values.begin(), wer_values.end());
     float median_wer = wer_values.empty() ? 0.0f : wer_values[wer_values.size() / 2];
 
     float overall_rtfx = total_processing_time > 0 ? total_audio_duration / total_processing_time : 0.0f;
 
-    // Write JSON
+    // Write JSON with percentages for WER/CER
     out << "{\n";
     out << "  \"summary\": {\n";
     out << "    \"files_processed\": " << results.size() << ",\n";
-    out << "    \"average_wer\": " << avg_wer << ",\n";
-    out << "    \"median_wer\": " << median_wer << ",\n";
-    out << "    \"average_cer\": " << avg_cer << ",\n";
+    out << std::fixed << std::setprecision(2);
+    out << "    \"average_wer_percent\": " << (avg_wer * 100) << ",\n";
+    out << "    \"median_wer_percent\": " << (median_wer * 100) << ",\n";
+    out << "    \"average_cer_percent\": " << (avg_cer * 100) << ",\n";
+    out << std::setprecision(1);
     out << "    \"overall_rtfx\": " << overall_rtfx << ",\n";
+    out << std::setprecision(1);
     out << "    \"total_audio_duration\": " << total_audio_duration << ",\n";
     out << "    \"total_processing_time\": " << total_processing_time << "\n";
     out << "  },\n";
@@ -389,8 +368,10 @@ void save_results_json(const std::string& output_file, const std::vector<Benchma
         out << "      \"audio_path\": \"" << r.audio_path << "\",\n";
         out << "      \"hypothesis\": \"" << r.hypothesis << "\",\n";
         out << "      \"reference\": \"" << r.reference << "\",\n";
-        out << "      \"wer\": " << r.wer << ",\n";
-        out << "      \"cer\": " << r.cer << ",\n";
+        out << std::fixed << std::setprecision(2);
+        out << "      \"wer_percent\": " << (r.wer * 100) << ",\n";
+        out << "      \"cer_percent\": " << (r.cer * 100) << ",\n";
+        out << std::setprecision(1);
         out << "      \"processing_time_ms\": " << r.processing_time_ms << ",\n";
         out << "      \"audio_duration_sec\": " << r.audio_duration_sec << ",\n";
         out << "      \"substitutions\": " << r.substitutions << ",\n";
