@@ -86,6 +86,19 @@ public:
   [[nodiscard]] size_t vocab_size() const { return vocab_.size(); }
   [[nodiscard]] int blank_id() const { return blank_id_; }
 
+  [[nodiscard]] bool is_punctuation(int token_id) const {
+    if (token_id < 0) return false;
+    const auto idx = static_cast<size_t>(token_id);
+    if (idx >= vocab_.size()) return false;
+    std::string_view piece{vocab_[idx]};
+    if (piece.empty()) return false;
+    // Strip SentencePiece word boundary marker if present
+    if (piece.starts_with(kWordBoundary)) {
+      piece.remove_prefix(kWordBoundary.size());
+    }
+    return (piece == "." || piece == "?" || piece == "!");
+  }
+
 private:
   std::vector<std::string> vocab_;
   int blank_id_ = 1024;
@@ -430,9 +443,7 @@ DecoderResult run_greedy_decoder(OpenVINOParakeet::Impl& impl,
       std::memcpy(decoder_step.data<float>(), decoder_output.data<float>(), decoder_output.get_byte_size());
 
       // Cache this decoder output for next iteration
-      if (!state.cached_decoder_output) {
-        state.cached_decoder_output = ov::Tensor(ov::element::f32, {1, 1, impl.decoder_hidden_size});
-      }
+      state.cached_decoder_output = ov::Tensor(ov::element::f32, {1, 1, impl.decoder_hidden_size});
       std::memcpy(state.cached_decoder_output.data<float>(), decoder_output.data<float>(), decoder_output.get_byte_size());
       state.has_cached_output = true;
     }
@@ -526,6 +537,107 @@ DecoderResult run_greedy_decoder(OpenVINOParakeet::Impl& impl,
     }
   }
 
+  // Last-chunk finalization: continue at the last encoder frame until
+  // two consecutive blanks or max additional steps. This flushes any
+  // trailing tokens that require predictor iterations beyond encoder length.
+  {
+    const size_t last_frame = valid_frames > 0 ? (valid_frames - 1) : 0;
+    size_t additional_steps = 0;
+    size_t consecutive_blanks = 0;
+    const size_t max_additional_steps = 32;
+    const size_t max_consecutive_blanks = 2;
+
+    while (additional_steps < max_additional_steps &&
+           consecutive_blanks < max_consecutive_blanks &&
+           tokens.size() < options.max_tokens) {
+      // Prepare decoder output for current last_token
+      ov::Tensor decoder_output;
+      ov::Tensor next_hidden;
+      ov::Tensor next_cell;
+
+      if (state.has_cached_output && last_token == state.last_token.value_or(-1)) {
+        // Cache hit across chunk boundary
+        cache_hits++;
+        std::memcpy(decoder_step.data<float>(), state.cached_decoder_output.data<float>(), decoder_step.get_byte_size());
+        next_hidden = hidden_state;
+        next_cell = cell_state;
+      } else {
+        // Need to run decoder for the current last_token
+        decoder_runs++;
+        token_input.data<int32_t>()[0] = last_token;
+
+        impl.decoder_request.set_input_tensor(0, token_input);  // targets
+        impl.decoder_request.set_input_tensor(1, hidden_state);  // h_in
+        impl.decoder_request.set_input_tensor(2, cell_state);    // c_in
+        impl.decoder_request.infer();
+
+        decoder_output = impl.decoder_request.get_output_tensor(0);  // decoder_output
+        next_hidden = impl.decoder_request.get_output_tensor(1);      // h_out
+        next_cell = impl.decoder_request.get_output_tensor(2);        // c_out
+
+        // Store decoder output for potential reuse
+        std::memcpy(decoder_step.data<float>(), decoder_output.data<float>(), decoder_output.get_byte_size());
+        state.cached_decoder_output = ov::Tensor(ov::element::f32, {1, 1, impl.decoder_hidden_size});
+        std::memcpy(state.cached_decoder_output.data<float>(), decoder_output.data<float>(), decoder_output.get_byte_size());
+        state.has_cached_output = true;
+      }
+
+      // Run joint with the LAST encoder frame and current decoder output
+      total_joint_calls++;
+      for (size_t channel = 0; channel < impl.encoder_hidden_size; ++channel) {
+        const size_t off = channel * encoder.time_steps + last_frame;
+        encoder_step.data<float>()[channel] = encoder.data[off];
+      }
+      impl.joint_request.set_input_tensor(0, encoder_step);
+      impl.joint_request.set_input_tensor(1, decoder_step);
+      impl.joint_request.infer();
+
+      const auto logits_tensor = impl.joint_request.get_output_tensor(0);
+      const float* logits = logits_tensor.data<float>();
+
+      // Best token
+      size_t best_token = 0;
+      float best_token_score = logits[0];
+      for (size_t i = 1; i < vocab_size; ++i) {
+        if (logits[i] > best_token_score) {
+          best_token_score = logits[i];
+          best_token = i;
+        }
+      }
+
+      // Confidence over token head
+      float token_sum_exp = 0.0F;
+      for (size_t i = 0; i < vocab_size; ++i) token_sum_exp += std::exp(logits[i]);
+      float token_confidence = std::exp(best_token_score) / token_sum_exp;
+
+      const bool is_blank = static_cast<int>(best_token) == impl.runtime_cfg.blank_token_id;
+      if (!is_blank) {
+        // Emit token at last frame index
+        non_blank_tokens++;
+        const int token_id = static_cast<int>(best_token);
+        tokens.push_back(token_id);
+        timings.push_back({
+            .token_id = token_id,
+            .frame_index = last_frame,
+            .confidence = token_confidence});
+
+        // Update LSTM with this token's context for next step
+        std::memcpy(hidden_state.data<float>(), next_hidden.data<float>(), next_hidden.get_byte_size());
+        std::memcpy(cell_state.data<float>(), next_cell.data<float>(), next_cell.get_byte_size());
+
+        last_token = token_id;
+        state.has_cached_output = false;  // Force decoder run for new token on next step
+        consecutive_blanks = 0;
+      } else {
+        // Count consecutive blanks; do not update LSTM
+        blank_tokens++;
+        consecutive_blanks++;
+      }
+
+      additional_steps++;
+    }
+  }
+
   // Log TDT statistics
   std::cerr << "[TDT Stats] Joint network calls: " << total_joint_calls << "\n";
   std::cerr << "[TDT Stats] Decoder runs: " << decoder_runs
@@ -558,9 +670,7 @@ DecoderResult run_greedy_decoder(OpenVINOParakeet::Impl& impl,
     std::cerr << "[INFO] Saved final LSTM state and last token: " << *state.last_token << "\n";
 
     // Clear cache after punctuation tokens to prevent duplicates at chunk boundaries
-    // Token IDs from FluidAudio Swift implementation
-    const std::vector<int> punctuation_tokens = {7883, 7952, 7948};  // period, question, exclamation
-    if (std::find(punctuation_tokens.begin(), punctuation_tokens.end(), *state.last_token) != punctuation_tokens.end()) {
+    if (impl.tokenizer.is_punctuation(*state.last_token)) {
       state.has_cached_output = false;
       std::cerr << "[INFO] Cleared decoder cache after punctuation token\n";
     }
@@ -600,7 +710,11 @@ InferenceResult OpenVINOParakeet::infer(const AudioSegment& segment, const Segme
       std::cerr << "[INFO] Audio too long (" << mel.frames << " frames), processing in chunks\n";
 
       // Use overlap to avoid losing audio at boundaries
-      const size_t overlap_frames = 300;  // ~3 seconds of overlap
+      // FluidAudio uses ~20 frames (~1.6s) when max window ~180 frames (~14.4s)
+      // Choose a proportional overlap (~1/9 of max_frames) with sane bounds
+      const size_t overlap_frames = std::min<size_t>(
+          max_frames > 1 ? max_frames - 1 : 1,
+          std::max<size_t>(4, max_frames / 9));
       const size_t stride = max_frames - overlap_frames;
 
       // Persistent decoder state across chunks for full state continuity
@@ -608,10 +722,14 @@ InferenceResult OpenVINOParakeet::infer(const AudioSegment& segment, const Segme
 
       size_t offset = 0;
       size_t chunk_idx = 0;
+      // Track the last emitted token's global encoder frame index to enforce monotonic time
+      size_t last_emitted_global_frame = 0;
+      bool have_last_emitted_frame = false;
 
       while (offset < mel.frames) {
         // Extract chunk with overlap
         const size_t chunk_size = std::min(max_frames, mel.frames - offset);
+        const bool is_last_chunk = (offset + chunk_size >= mel.frames);
 
         MelFeatures chunk;
         chunk.frames = chunk_size;
@@ -637,12 +755,39 @@ InferenceResult OpenVINOParakeet::infer(const AudioSegment& segment, const Segme
         if (chunk_idx == 0) {
           // First chunk: keep all tokens and timings
           token_ids = std::move(chunk_tokens);
+          // Convert timings to global frame indices (offset = 0 for first chunk)
+          for (auto& t : chunk_timings) {
+            t.frame_index += offset;
+          }
           all_timings = std::move(chunk_timings);
+          if (!all_timings.empty()) {
+            last_emitted_global_frame = all_timings.back().frame_index;
+            have_last_emitted_frame = true;
+          }
         } else {
           // Subsequent chunks: use deduplication as safety net (FluidAudio approach)
           // Even with LSTM state continuity, decoder state reset at chunk boundaries
           // can cause some duplicates, so we apply deduplication as a safety net
           size_t skip_count = 0;
+
+          // Convert timings to global frame indices by adding the current chunk offset
+          for (auto& t : chunk_timings) {
+            t.frame_index += offset;
+          }
+
+          // Global time-gate: ensure strictly increasing global frame indices
+          if (have_last_emitted_frame && !chunk_timings.empty()) {
+            size_t time_gate_idx = 0;
+            while (time_gate_idx < chunk_timings.size() &&
+                   chunk_timings[time_gate_idx].frame_index <= last_emitted_global_frame) {
+              ++time_gate_idx;
+            }
+            if (time_gate_idx > 0) {
+              std::cerr << "[INFO] Time-gate skipped " << time_gate_idx
+                        << " tokens to enforce monotonic global timing\n";
+              skip_count = std::max(skip_count, time_gate_idx);
+            }
+          }
 
           std::cerr << "[DEBUG] Last 10 tokens of prev chunk: ";
           for (size_t i = std::max(size_t(0), token_ids.size() - 10); i < token_ids.size(); ++i) {
@@ -693,14 +838,42 @@ InferenceResult OpenVINOParakeet::infer(const AudioSegment& segment, const Segme
             }
           }
 
-          skip_count = best_skip_count;
+          skip_count = std::max(skip_count, best_skip_count);
           if (skip_count == 0) {
             std::cerr << "[INFO] No duplicates found - LSTM state continuity working perfectly!\n";
           }
 
-          // Append tokens and timings, skipping duplicates
-          token_ids.insert(token_ids.end(), chunk_tokens.begin() + skip_count, chunk_tokens.end());
-          all_timings.insert(all_timings.end(), chunk_timings.begin() + skip_count, chunk_timings.end());
+          // Right-context holdback: for non-final chunks, hold back tokens near the end
+          // so that the next chunk (with more right context) can decide.
+          size_t emit_end = chunk_tokens.size();
+          if (!is_last_chunk && !chunk_timings.empty()) {
+            const size_t right_context_frames = std::min(overlap_frames, chunk_size);
+            size_t holdback_start = chunk_tokens.size();
+            for (size_t idx = 0; idx < chunk_timings.size(); ++idx) {
+              const size_t local_frame = chunk_timings[idx].frame_index - offset;  // convert back to local
+              if (local_frame >= (chunk_size > right_context_frames ? (chunk_size - right_context_frames) : 0)) {
+                holdback_start = idx;
+                break;
+              }
+            }
+            if (holdback_start < chunk_tokens.size()) {
+              emit_end = std::min(emit_end, holdback_start);
+              std::cerr << "[INFO] Holding back " << (chunk_tokens.size() - holdback_start)
+                        << " tokens for right-context lookahead\n";
+            }
+          }
+
+          // Append tokens and timings, skipping duplicates and any filtered prefix/suffix
+          if (skip_count >= emit_end) {
+            std::cerr << "[INFO] Entire chunk consists of overlapped region; appending nothing\n";
+          } else {
+            token_ids.insert(token_ids.end(), chunk_tokens.begin() + skip_count, chunk_tokens.begin() + emit_end);
+            all_timings.insert(all_timings.end(), chunk_timings.begin() + skip_count, chunk_timings.begin() + emit_end);
+            if (!all_timings.empty()) {
+              last_emitted_global_frame = all_timings.back().frame_index;
+              have_last_emitted_frame = true;
+            }
+          }
         }
 
         chunk_idx++;

@@ -9,6 +9,10 @@
 #include <vector>
 #include <sstream>
 #include <cctype>
+#include <fstream>
+#include <algorithm>
+
+#include "nlohmann/json.hpp"
 
 namespace eddy {
 
@@ -34,18 +38,47 @@ public:
         // 4. Expand contractions
         result = expand_contractions(result);
 
-        // 5. Remove punctuation except apostrophes in words
+        // 5. Apply British→American variants (if dictionary is loaded)
+        result = apply_variants(result);
+
+        // 6. Remove punctuation except apostrophes in words
         result = clean_punctuation(result);
 
-        // 6. Normalize whitespace
+        // 7. Normalize whitespace
         result = normalize_whitespace(result);
 
         return result;
     }
 
+    // Load a dictionary mapping (e.g., FluidAudio's english.json).
+    // JSON must be an object of { "british": "american", ... }.
+    void load_variants_json(const std::string& json_path) {
+        try {
+            std::ifstream in(json_path);
+            if (!in.good()) return;
+            nlohmann::json j; in >> j;
+            if (!j.is_object()) return;
+
+            variants_.clear();
+            for (auto it = j.begin(); it != j.end(); ++it) {
+                if (!it.value().is_string()) continue;
+                std::string key = to_lowercase(it.key());
+                std::string val = to_lowercase(it.value().get<std::string>());
+                sanitize_token(key);
+                sanitize_token(val);
+                if (!key.empty() && !val.empty()) {
+                    variants_[key] = val;
+                }
+            }
+        } catch (...) {
+            // Ignore dictionary load errors silently; normalization still works.
+        }
+    }
+
 private:
     std::unordered_map<std::string, std::string> abbreviations_;
     std::unordered_map<std::string, std::string> contractions_;
+    std::unordered_map<std::string, std::string> variants_;
 
     void initialize_mappings() {
         // Common abbreviations (matching FluidAudio)
@@ -275,6 +308,34 @@ private:
         return result;
     }
 
+    // Apply British→American word variants on word boundaries only
+    std::string apply_variants(const std::string& text) const {
+        if (variants_.empty()) return text;
+
+        std::string result;
+        result.reserve(text.size());
+
+        // Tokenize keeping non-letters intact, operate on [a-z]+ tokens
+        size_t i = 0, n = text.size();
+        while (i < n) {
+            if (std::isalpha(static_cast<unsigned char>(text[i]))) {
+                size_t start = i;
+                while (i < n && std::isalpha(static_cast<unsigned char>(text[i]))) i++;
+                std::string word = text.substr(start, i - start);
+                std::string lower = to_lowercase(word);
+                auto it = variants_.find(lower);
+                if (it != variants_.end()) {
+                    result += it->second;
+                } else {
+                    result += word;
+                }
+            } else {
+                result += text[i++];
+            }
+        }
+        return result;
+    }
+
     std::string clean_punctuation(const std::string& text) const {
         std::string result;
         bool in_word = false;
@@ -322,6 +383,23 @@ private:
         }
 
         return result;
+    }
+
+    // Sanitize tokens loaded from JSON (strip trivial HTML fragments, punctuation around word)
+    static void sanitize_token(std::string& s) {
+        // Remove any simple HTML tags like </span>
+        s = std::regex_replace(s, std::regex(R"(<[^>]*>)"), "");
+        // Trim surrounding whitespace
+        auto not_space = [](int ch){ return !std::isspace(ch); };
+        s.erase(s.begin(), std::find_if(s.begin(), s.end(), not_space));
+        s.erase(std::find_if(s.rbegin(), s.rend(), not_space).base(), s.end());
+        // Keep only letters/apostrophes/hyphens in tokens we map
+        std::string cleaned;
+        cleaned.reserve(s.size());
+        for (char c : s) {
+            if (std::isalpha(static_cast<unsigned char>(c)) || c=='\'' || c=='-') cleaned.push_back(c);
+        }
+        s.swap(cleaned);
     }
 };
 

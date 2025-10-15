@@ -26,7 +26,7 @@ namespace fs = std::filesystem;
 // ============================================================================
 
 // Global normalizer instance
-static const eddy::TextNormalizer g_normalizer;
+static eddy::TextNormalizer g_normalizer;
 
 std::string normalize_text(const std::string& text) {
     // Use the comprehensive TextNormalizer that matches FluidAudio's approach
@@ -398,6 +398,7 @@ int main(int argc, char* argv[]) {
     // Parse arguments
     int max_files = 25;
     std::string device = "CPU";
+    std::string normalizer_dict_path;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -410,11 +411,14 @@ int main(int argc, char* argv[]) {
             }
         } else if (arg == "--device" && i + 1 < argc) {
             device = argv[++i];
+        } else if (arg == "--normalizer-dict" && i + 1 < argc) {
+            normalizer_dict_path = argv[++i];
         } else if (arg == "--help" || arg == "-h") {
             std::cout << "Usage: " << argv[0] << " [options]\n\n";
             std::cout << "Options:\n";
             std::cout << "  --max-files <N|all>  Number of files to process (default: 25)\n";
             std::cout << "  --device <device>    OpenVINO device: CPU, GPU, AUTO (default: CPU)\n";
+            std::cout << "  --normalizer-dict <path>  Path to english.json for British→American mapping\n";
             std::cout << "  --help              Show this help\n";
             return 0;
         }
@@ -425,6 +429,23 @@ int main(int argc, char* argv[]) {
     std::cout << std::string(80, '=') << "\n\n";
 
     try {
+        // Load normalization dictionary (if provided or found in known locations)
+        if (!normalizer_dict_path.empty()) {
+            g_normalizer.load_variants_json(normalizer_dict_path);
+            std::cout << "Loaded normalizer dict: " << normalizer_dict_path << "\n\n";
+        } else {
+            fs::path repo_default = fs::path("FluidAudio") / "Sources" / "FluidAudioCLI" / "Utils" / "english.json";
+            fs::path examples_default = fs::path("examples") / "cpp" / "english.json";
+            if (fs::exists(repo_default)) {
+                g_normalizer.load_variants_json(repo_default.string());
+                std::cout << "Loaded normalizer dict: " << repo_default.string() << "\n\n";
+            } else if (fs::exists(examples_default)) {
+                g_normalizer.load_variants_json(examples_default.string());
+                std::cout << "Loaded normalizer dict: " << examples_default.string() << "\n\n";
+            } else {
+                std::cout << "No normalizer dict provided; using built-in rules only.\n\n";
+            }
+        }
         // Setup dataset paths
         fs::path dataset_parent = fs::path(std::getenv("LOCALAPPDATA")) / "eddy" / "datasets";
         fs::path dataset_dir = dataset_parent / "LibriSpeech" / "test-clean";
