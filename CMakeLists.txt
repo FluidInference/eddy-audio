@@ -5,6 +5,15 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+# Enable interprocedural optimization (LTO/LTCG) for Release builds
+set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+
+if(MSVC)
+  # Favor fast math and aggressive inlining for Release
+  # Use flags string to avoid malformed generator expressions on MSBuild
+  string(APPEND CMAKE_CXX_FLAGS_RELEASE " /O2 /Oi /Ot /Ob3 /fp:fast")
+endif()
+
 option(EDDY_ENABLE_OPENVINO "Enable OpenVINO backend" ON)
 option(EDDY_BUILD_EXAMPLES "Build examples" ON)
 option(EDDY_BUILD_CSHARP "Build C# bindings" OFF)
@@ -37,8 +46,8 @@ if(WIN32)
 endif()
 
 if(EDDY_ENABLE_OPENVINO)
+  # Core OpenVINO-dependent sources (do not require GenAI)
   target_sources(eddy PRIVATE
-    src/pipelines/whisper_pipeline.cpp
     src/pipelines/audio_utils.cpp
     src/models/parakeet/parakeet_openvino.cpp
     src/streaming/buffered_streaming_asr.cpp
@@ -48,6 +57,9 @@ if(EDDY_ENABLE_OPENVINO)
 
   # Link GenAI only if found (for Whisper support)
   if(OpenVINOGenAI_FOUND)
+    # Whisper example depends on OpenVINO GenAI headers/libraries
+    target_sources(eddy PRIVATE src/pipelines/whisper_pipeline.cpp)
+    target_compile_definitions(eddy PUBLIC EDDY_WITH_OPENVINO_GENAI=1)
     target_link_libraries(eddy PUBLIC openvino::genai)
   endif()
 endif()
@@ -82,6 +94,7 @@ target_compile_definitions(eddy_c PRIVATE EDDY_BUILD_SHARED=1)
 install(TARGETS eddy_c RUNTIME DESTINATION bin LIBRARY DESTINATION lib ARCHIVE DESTINATION lib)
 
 include(CTest)
-if(BUILD_TESTING)
+# Only add tests if requested and the folder exists
+if(BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/CMakeLists.txt")
   add_subdirectory(tests)
 endif()

@@ -9,10 +9,19 @@
 
 #include <chrono>
 #include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <iostream>
 #include <iomanip>
 #include <string>
 #include <vector>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 void print_usage(const char* program_name) {
     std::cout << "Usage: " << program_name << " <audio.wav> [options]\n\n";
@@ -87,15 +96,98 @@ int main(int argc, char* argv[]) {
         // Set compiled model cache to the per-model cache dir
         auto compiled_cache_dir = eddy::get_model_cache_dir("parakeet-v2").string();
         auto backend = std::make_shared<eddy::OpenVINOBackend>(
-            eddy::OpenVINOOptions{.device = device, .cache_dir = compiled_cache_dir}
+            eddy::OpenVINOOptions{
+                .device = device,
+                .cache_dir = compiled_cache_dir,
+                .performance_mode = std::string("LATENCY"),
+                .num_requests = 1}
         );
         std::cout << "[OK]\n";
 
-        // Determine model directory: cache first, then local fallback
+        // Determine model directory: ensure cache has required files; auto-download if missing
         auto cache_model_dir = eddy::get_model_files_dir("parakeet-v2");
         std::filesystem::path model_dir;
 
-        if (std::filesystem::exists(cache_model_dir / "parakeet_encoder.xml")) {
+        auto exists_nonempty = [](const std::filesystem::path& p) -> bool {
+            std::error_code ec;
+            return std::filesystem::exists(p, ec) && std::filesystem::is_regular_file(p, ec) && std::filesystem::file_size(p, ec) > 0;
+        };
+
+        std::vector<std::string> required = {
+            "parakeet_melspectogram.xml",
+            "parakeet_melspectogram.bin",
+            "parakeet_encoder.xml",
+            "parakeet_encoder.bin",
+            "parakeet_decoder.xml",
+            "parakeet_decoder.bin",
+            "parakeet_joint.xml",
+            "parakeet_joint.bin",
+            "parakeet_vocab.json",
+        };
+
+        // Collect missing files in cache
+        std::vector<std::string> missing;
+        for (const auto& f : required) {
+            if (!exists_nonempty(cache_model_dir / f)) missing.push_back(f);
+        }
+
+        if (!missing.empty()) {
+            std::cout << "Missing model files in cache (" << cache_model_dir.string() << "):\n";
+            for (const auto& f : missing) std::cout << "  - " << f << "\n";
+            std::cout << "Attempting to auto-download via hf_fetch_models...\n";
+
+            // Try to locate hf_fetch_models in the same directory as this executable
+            std::filesystem::path hf_path;
+#if defined(_WIN32)
+            char exe_buf[MAX_PATH] = {0};
+            DWORD n = GetModuleFileNameA(nullptr, exe_buf, static_cast<DWORD>(sizeof(exe_buf)));
+            if (n > 0) {
+                std::filesystem::path exe_dir = std::filesystem::path(exe_buf).parent_path();
+                std::filesystem::path candidate = exe_dir / "hf_fetch_models.exe";
+                if (std::filesystem::exists(candidate)) {
+                    hf_path = candidate;
+                }
+            }
+#endif
+            // Fallback: rely on PATH
+            std::string cmd;
+            if (!hf_path.empty()) {
+                cmd = '"' + hf_path.string() + '"';
+            } else {
+                cmd = "hf_fetch_models";  // rely on PATH
+            }
+
+            // Build comma-separated --files list for only missing files
+            std::ostringstream files_opt;
+            for (size_t i = 0; i < missing.size(); ++i) {
+                if (i) files_opt << ',';
+                files_opt << missing[i];
+            }
+
+            std::ostringstream full_cmd;
+#if defined(_WIN32)
+            full_cmd << cmd << " --files \"" << files_opt.str() << "\"";
+#else
+            full_cmd << cmd << " --files '" << files_opt.str() << "'";
+#endif
+
+            std::cout << "Running: " << full_cmd.str() << "\n";
+            int rc = std::system(full_cmd.str().c_str());
+            (void)rc;
+
+            // Re-check missing
+            std::vector<std::string> still_missing;
+            for (const auto& f : required) {
+                if (!exists_nonempty(cache_model_dir / f)) still_missing.push_back(f);
+            }
+            if (!still_missing.empty()) {
+                std::cout << "Some files still missing after download attempt:\n";
+                for (const auto& f : still_missing) std::cout << "  - " << f << "\n";
+            }
+        }
+
+        // Prefer cache if encoder xml exists (minimum signal of a complete set)
+        if (exists_nonempty(cache_model_dir / "parakeet_encoder.xml")) {
             model_dir = cache_model_dir;
             std::cout << "Using cached models at: " << cache_model_dir.string() << "\n\n";
         } else {
@@ -144,6 +236,7 @@ int main(int argc, char* argv[]) {
         std::cout << std::string(70, '=') << "\n\n";
 
         eddy::parakeet::SegmentOptions options;
+        options.track_confidence = true;  // CLI displays confidence; cost is fine for single-file use
         auto start = std::chrono::high_resolution_clock::now();
         auto result = model->infer(segment, options);
         auto end = std::chrono::high_resolution_clock::now();
