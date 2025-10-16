@@ -215,17 +215,34 @@ void OpenVINOParakeet::ensure_compiled_model() {
   std::call_once(impl_->compile_once, [this]() {
     auto& core = impl_->backend->core();
     const std::string device = impl_->runtime_cfg.device.empty() ? "AUTO" : impl_->runtime_cfg.device;
+    const bool target_npu = (device == "NPU");
 
-    impl_->preproc_model = compile_component(core, impl_->model_paths.preprocessor, device);
+    // Preprocessor: keep on CPU for stability
+    const std::string preproc_device = target_npu ? std::string("CPU") : device;
+    impl_->preproc_model = compile_component(core, impl_->model_paths.preprocessor, preproc_device);
     impl_->preproc_request = impl_->preproc_model.create_infer_request();
 
-    impl_->encoder_model = compile_component(core, impl_->model_paths.encoder, device);
+    auto compile_with_fallback = [&](const ModelFile& file, const char* name) -> ov::CompiledModel {
+      if (!target_npu) {
+        return compile_component(core, file, device);
+      }
+      try {
+        return compile_component(core, file, "NPU");
+      } catch (const std::exception& e) {
+        std::cerr << "[WARN] NPU compile failed for " << name << ": " << e.what() << "\n";
+        std::cerr << "[WARN] Falling back to CPU for " << name << "\n";
+        return compile_component(core, file, "CPU");
+      }
+    };
+
+    impl_->encoder_model = compile_with_fallback(impl_->model_paths.encoder, "encoder");
     impl_->encoder_request = impl_->encoder_model.create_infer_request();
 
-    impl_->decoder_model = compile_component(core, impl_->model_paths.decoder, device);
+    // Decoder: try NPU with CPU fallback like others
+    impl_->decoder_model = compile_with_fallback(impl_->model_paths.decoder, "decoder");
     impl_->decoder_request = impl_->decoder_model.create_infer_request();
 
-    impl_->joint_model = compile_component(core, impl_->model_paths.joint, device);
+    impl_->joint_model = compile_with_fallback(impl_->model_paths.joint, "joint");
     impl_->joint_request = impl_->joint_model.create_infer_request();
 
     impl_->tokenizer.load(impl_->model_paths.tokenizer_json, impl_->runtime_cfg.blank_token_id);
@@ -269,11 +286,25 @@ MelFeatures run_preprocessor(OpenVINOParakeet::Impl& impl, const AudioSegment& s
     throw std::invalid_argument("Parakeet OpenVINO pipeline expects 16 kHz audio samples");
   }
 
-  ov::Tensor audio_signal(ov::element::f32, {1, segment.pcm.size()});
-  std::copy(segment.pcm.begin(), segment.pcm.end(), audio_signal.data<float>());
+  size_t required_samples = segment.pcm.size();
+  try {
+    const auto in_shape = impl.preproc_model.input(0).get_shape();
+    if (in_shape.size() >= 2 && in_shape[1] > 0) {
+      required_samples = static_cast<size_t>(in_shape[1]);
+    }
+  } catch (...) {
+    // If shape query fails, fallback to variable length
+  }
+
+  const size_t copy_samples = std::min(required_samples, segment.pcm.size());
+  ov::Tensor audio_signal(ov::element::f32, {1, required_samples});
+  std::fill(audio_signal.data<float>(), audio_signal.data<float>() + audio_signal.get_size(), 0.0F);
+  if (copy_samples) {
+    std::copy(segment.pcm.begin(), segment.pcm.begin() + copy_samples, audio_signal.data<float>());
+  }
 
   ov::Tensor audio_length(ov::element::i64, {1});
-  audio_length.data<int64_t>()[0] = static_cast<int64_t>(segment.pcm.size());
+  audio_length.data<int64_t>()[0] = static_cast<int64_t>(copy_samples);
 
   impl.preproc_request.set_input_tensor(0, audio_signal);  // audio_signal
   impl.preproc_request.set_input_tensor(1, audio_length);  // audio_length
@@ -325,8 +356,8 @@ EncoderActivations run_encoder(OpenVINOParakeet::Impl& impl, const MelFeatures& 
   ov::Tensor mel_length(ov::element::i32, {1});
   mel_length.data<int32_t>()[0] = static_cast<int32_t>(frames_to_copy);
 
-  impl.encoder_request.set_input_tensor(0, mel_tensor);  // melspectogram
-  impl.encoder_request.set_input_tensor(1, mel_length);  // melspectogram_length
+  impl.encoder_request.set_tensor(impl.encoder_model.input("melspectogram"), mel_tensor);
+  impl.encoder_request.set_tensor(impl.encoder_model.input("melspectogram_length"), mel_length);
   impl.encoder_request.infer();
 
   const auto encoder_tensor = impl.encoder_request.get_output_tensor(0);  // encoder_output
@@ -430,9 +461,9 @@ DecoderResult run_greedy_decoder(OpenVINOParakeet::Impl& impl,
       decoder_runs++;
       token_input.data<int32_t>()[0] = last_token;
 
-      impl.decoder_request.set_input_tensor(0, token_input);  // targets
-      impl.decoder_request.set_input_tensor(1, hidden_state);  // h_in
-      impl.decoder_request.set_input_tensor(2, cell_state);  // c_in
+      impl.decoder_request.set_tensor(impl.decoder_model.input("targets"), token_input);
+      impl.decoder_request.set_tensor(impl.decoder_model.input("h_in"), hidden_state);
+      impl.decoder_request.set_tensor(impl.decoder_model.input("c_in"), cell_state);
       impl.decoder_request.infer();
 
       decoder_output = impl.decoder_request.get_output_tensor(0);  // decoder_output
@@ -462,8 +493,8 @@ DecoderResult run_greedy_decoder(OpenVINOParakeet::Impl& impl,
       }
 
       // Run joint network with encoder frame + REUSED decoder output
-      impl.joint_request.set_input_tensor(0, encoder_step);  // encoder_outputs
-      impl.joint_request.set_input_tensor(1, decoder_step);  // decoder_outputs (REUSED!)
+      impl.joint_request.set_tensor(impl.joint_model.input("encoder_outputs"), encoder_step);
+      impl.joint_request.set_tensor(impl.joint_model.input("decoder_outputs"), decoder_step);
       impl.joint_request.infer();
 
       const auto logits_tensor = impl.joint_request.get_output_tensor(0);  // logits

@@ -6,5 +6,7 @@ target_link_libraries(parakeet_cli PRIVATE eddy)
 
 add_executable(benchmark_librispeech benchmark_librispeech.cpp)
 target_link_libraries(benchmark_librispeech PRIVATE eddy)
+# Ensure nlohmann/json single-header is visible to example headers
+target_include_directories(benchmark_librispeech PRIVATE ${CMAKE_SOURCE_DIR}/third_party)
 
 install(TARGETS whisper_example parakeet_cli benchmark_librispeech DESTINATION bin)

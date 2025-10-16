@@ -84,8 +84,10 @@ int main(int argc, char* argv[]) {
         // Create OpenVINO backend
         std::cout << "Initializing OpenVINO backend (" << device << ") ... ";
         std::cout.flush();
+        // Set compiled model cache to the per-model cache dir
+        auto compiled_cache_dir = eddy::get_model_cache_dir("parakeet-v2").string();
         auto backend = std::make_shared<eddy::OpenVINOBackend>(
-            eddy::OpenVINOOptions{.device = device}
+            eddy::OpenVINOOptions{.device = device, .cache_dir = compiled_cache_dir}
         );
         std::cout << "[OK]\n";
 
