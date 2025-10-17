@@ -81,17 +81,18 @@ if(EDDY_BUILD_EXAMPLES)
   add_subdirectory(examples)
 endif()
 
-# Build a shared C API shim (eddy_c) that exposes the extern "C" FFI
-add_library(eddy_c SHARED src/eddy_c.cpp)
-target_include_directories(eddy_c
-  PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:include>
-)
-target_link_libraries(eddy_c PRIVATE eddy)
-target_compile_definitions(eddy_c PRIVATE EDDY_BUILD_SHARED=1)
-
-install(TARGETS eddy_c RUNTIME DESTINATION bin LIBRARY DESTINATION lib ARCHIVE DESTINATION lib)
+# Build C API shim only when Whisper (GenAI) is available to satisfy symbols
+if(OpenVINOGenAI_FOUND)
+  add_library(eddy_c SHARED src/eddy_c.cpp)
+  target_include_directories(eddy_c
+    PUBLIC
+      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+      $<INSTALL_INTERFACE:include>
+  )
+  target_link_libraries(eddy_c PRIVATE eddy)
+  target_compile_definitions(eddy_c PRIVATE EDDY_BUILD_SHARED=1)
+  install(TARGETS eddy_c RUNTIME DESTINATION bin LIBRARY DESTINATION lib ARCHIVE DESTINATION lib)
+endif()
 
 include(CTest)
 # Only add tests if requested and the folder exists

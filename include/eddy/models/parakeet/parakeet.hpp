@@ -57,6 +57,25 @@ struct InferenceResult {
   /// Per-token timing and confidence information
   /// Empty if token timing tracking is disabled
   std::vector<TokenTiming> token_timings;
+
+  /// Chunking metadata (for long audio processed in overlapping windows)
+  /// Number of chunks is chunk_sizes_frames.size(); for short audio this
+  /// contains a single entry with total valid frames.
+  std::vector<size_t> chunk_sizes_frames;
+
+  /// Detailed per-chunk log for benchmarking/export
+  struct ChunkInfo {
+    size_t index = 0;            // chunk index
+    size_t offset_frames = 0;    // starting frame offset in global mel
+    size_t size_frames = 0;      // frames processed in this chunk
+    bool is_last = false;        // whether last chunk
+    size_t tokens_predicted = 0; // tokens produced by decoder for this chunk
+    size_t tokens_appended = 0;  // tokens appended after dedup/holdback
+    size_t skip_prefix = 0;      // dedup prefix skipped from current chunk
+    size_t holdback = 0;         // tokens held back for right-context lookahead
+    std::string appended_text;   // decoded text of the appended token slice
+  };
+  std::vector<ChunkInfo> chunks;
 };
 
 class IParakeetModel {

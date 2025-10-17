@@ -310,6 +310,20 @@ struct BenchmarkResult {
     int deletions;
     int insertions;
     int total_words;
+    int chunk_count = 0;
+    std::vector<size_t> chunk_sizes_frames;
+    struct ChunkLogOut {
+        int index;
+        int offset_frames;
+        int size_frames;
+        bool is_last;
+        int tokens_predicted;
+        int tokens_appended;
+        int skip_prefix;
+        int holdback;
+        std::string text;
+    };
+    std::vector<ChunkLogOut> chunks;
 };
 
 void save_results_json(const std::string& output_file, std::vector<BenchmarkResult> results) {
@@ -377,7 +391,38 @@ void save_results_json(const std::string& output_file, std::vector<BenchmarkResu
         out << "      \"substitutions\": " << r.substitutions << ",\n";
         out << "      \"deletions\": " << r.deletions << ",\n";
         out << "      \"insertions\": " << r.insertions << ",\n";
-        out << "      \"total_words\": " << r.total_words << "\n";
+        out << "      \"total_words\": " << r.total_words << ",\n";
+        out << "      \"chunk_count\": " << r.chunk_count << ",\n";
+        out << "      \"chunk_sizes_frames\": [";
+        for (size_t j = 0; j < r.chunk_sizes_frames.size(); ++j) {
+            out << r.chunk_sizes_frames[j];
+            if (j + 1 < r.chunk_sizes_frames.size()) out << ", ";
+        }
+        out << "]";
+        if (r.chunk_count > 1) {
+            out << ",\n";
+            out << "      \"chunks\": [\n";
+            for (size_t j = 0; j < r.chunks.size(); ++j) {
+                const auto& c = r.chunks[j];
+                out << "        {\n";
+                out << "          \"index\": " << c.index << ",\n";
+                out << "          \"offset_frames\": " << c.offset_frames << ",\n";
+                out << "          \"size_frames\": " << c.size_frames << ",\n";
+                out << "          \"is_last\": " << (c.is_last ? "true" : "false") << ",\n";
+                out << std::fixed << std::setprecision(0);
+                out << "          \"tokens_predicted\": " << c.tokens_predicted << ",\n";
+                out << "          \"tokens_appended\": " << c.tokens_appended << ",\n";
+                out << "          \"skip_prefix\": " << c.skip_prefix << ",\n";
+                out << "          \"holdback\": " << c.holdback << ",\n";
+                out << "          \"text\": \"" << c.text << "\"\n";
+                out << "        }";
+                if (j + 1 < r.chunks.size()) out << ",";
+                out << "\n";
+            }
+            out << "      ]\n";
+        } else {
+            out << "\n";
+        }
         out << "    }";
         if (i < results.size() - 1) out << ",";
         out << "\n";
@@ -399,6 +444,7 @@ int main(int argc, char* argv[]) {
     int max_files = 25;
     std::string device = "CPU";
     std::string normalizer_dict_path;
+    double min_wer_percent = -1.0; // if >=0, filter JSON results by this WER percent
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -411,6 +457,9 @@ int main(int argc, char* argv[]) {
             }
         } else if (arg == "--device" && i + 1 < argc) {
             device = argv[++i];
+        } else if (arg == "--min-wer" && i + 1 < argc) {
+            // Filter results in the output JSON to only entries with WER >= given percent (e.g., 10)
+            min_wer_percent = std::stod(argv[++i]);
         } else if (arg == "--normalizer-dict" && i + 1 < argc) {
             normalizer_dict_path = argv[++i];
         } else if (arg == "--help" || arg == "-h") {
@@ -418,6 +467,7 @@ int main(int argc, char* argv[]) {
             std::cout << "Options:\n";
             std::cout << "  --max-files <N|all>  Number of files to process (default: 25)\n";
             std::cout << "  --device <device>    OpenVINO device: CPU, GPU, AUTO (default: CPU)\n";
+            std::cout << "  --min-wer <percent>  Filter JSON results: include only entries with WER >= this percent (e.g., 10)\n";
             std::cout << "  --normalizer-dict <path>  Path to english.json for British→American mapping\n";
             std::cout << "  --help              Show this help\n";
             return 0;
@@ -555,20 +605,40 @@ int main(int argc, char* argv[]) {
                 float cer = calculate_cer(result.text, test_file.reference);
 
                 // Store result
-                results.push_back({
-                    test_file.file_id,
-                    test_file.audio_path.string(),
-                    result.text,
-                    test_file.reference,
-                    wer_metrics.wer,
-                    cer,
-                    proc_time_ms,
-                    audio_duration,
-                    wer_metrics.substitutions,
-                    wer_metrics.deletions,
-                    wer_metrics.insertions,
-                    wer_metrics.total_words
-                });
+                BenchmarkResult br;
+                br.file_id = test_file.file_id;
+                br.audio_path = test_file.audio_path.string();
+                br.hypothesis = result.text;
+                br.reference = test_file.reference;
+                br.wer = wer_metrics.wer;
+                br.cer = cer;
+                br.processing_time_ms = proc_time_ms;
+                br.audio_duration_sec = audio_duration;
+                br.substitutions = wer_metrics.substitutions;
+                br.deletions = wer_metrics.deletions;
+                br.insertions = wer_metrics.insertions;
+                br.total_words = wer_metrics.total_words;
+                br.chunk_count = static_cast<int>(result.chunk_sizes_frames.size());
+                br.chunk_sizes_frames = result.chunk_sizes_frames;
+                if (br.chunk_count > 1) {
+                    br.chunks.reserve(result.chunks.size());
+                    for (const auto& c : result.chunks) {
+                        BenchmarkResult::ChunkLogOut out{
+                            static_cast<int>(c.index),
+                            static_cast<int>(c.offset_frames),
+                            static_cast<int>(c.size_frames),
+                            c.is_last,
+                            static_cast<int>(c.tokens_predicted),
+                            static_cast<int>(c.tokens_appended),
+                            static_cast<int>(c.skip_prefix),
+                            static_cast<int>(c.holdback),
+                            c.appended_text
+                        };
+                        br.chunks.push_back(out);
+                    }
+                }
+
+                results.push_back(std::move(br));
 
                 total_audio_duration += audio_duration;
                 total_processing_time += proc_time_ms / 1000.0;
@@ -654,10 +724,21 @@ int main(int argc, char* argv[]) {
             std::cout << "[POOR] Accuracy needs investigation\n";
         }
 
-        // Save JSON
+        // Save JSON (optionally filtered by min WER percent)
         std::string output_file = "eddy_benchmark_results_cpp.json";
-        save_results_json(output_file, results);
-        std::cout << "\n[OK] Results saved to " << output_file << "\n";
+        if (min_wer_percent >= 0.0) {
+            std::vector<BenchmarkResult> filtered;
+            filtered.reserve(results.size());
+            for (const auto& r : results) {
+                if ((r.wer * 100.0) >= min_wer_percent) filtered.push_back(r);
+            }
+            save_results_json(output_file, std::move(filtered));
+            std::cout << "\n[OK] Results saved to " << output_file << " (filtered by min WER >= "
+                      << min_wer_percent << "%)\n";
+        } else {
+            save_results_json(output_file, results);
+            std::cout << "\n[OK] Results saved to " << output_file << "\n";
+        }
 
         return 0;
 

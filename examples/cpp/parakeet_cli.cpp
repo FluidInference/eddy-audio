@@ -95,13 +95,10 @@ int main(int argc, char* argv[]) {
         std::cout.flush();
         // Set compiled model cache to the per-model cache dir
         auto compiled_cache_dir = eddy::get_model_cache_dir("parakeet-v2").string();
-        auto backend = std::make_shared<eddy::OpenVINOBackend>(
-            eddy::OpenVINOOptions{
-                .device = device,
-                .cache_dir = compiled_cache_dir,
-                .performance_mode = std::string("LATENCY"),
-                .num_requests = 1}
-        );
+        eddy::OpenVINOOptions ov_opts;
+        ov_opts.device = device;
+        ov_opts.cache_dir = compiled_cache_dir;
+        auto backend = std::make_shared<eddy::OpenVINOBackend>(ov_opts);
         std::cout << "[OK]\n";
 
         // Determine model directory: ensure cache has required files; auto-download if missing
@@ -236,7 +233,6 @@ int main(int argc, char* argv[]) {
         std::cout << std::string(70, '=') << "\n\n";
 
         eddy::parakeet::SegmentOptions options;
-        options.track_confidence = true;  // CLI displays confidence; cost is fine for single-file use
         auto start = std::chrono::high_resolution_clock::now();
         auto result = model->infer(segment, options);
         auto end = std::chrono::high_resolution_clock::now();
