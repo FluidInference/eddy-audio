@@ -15,6 +15,15 @@ This doc captures the practical gotchas we hit while running the C++ benchmark a
 - No OpenVINO env needed, just run:
   - `build\examples\cpp\Release\benchmark_librispeech.exe --max-files 5 --device CPU`
 
+### Quick Start (Python via C ABI)
+
+- Build the C API shim and ensure models are fetched:
+  - `cmake --build build --config Release --target eddy eddy_c`
+  - `powershell -ExecutionPolicy Bypass -File scripts\setup_parakeet_models.ps1`
+- Install Python deps: `pip install datasets jiwer numpy`
+- Run:
+  - `python scripts\bench_parakeet_ctypes.py --lib build\Release\eddy_c.dll --device CPU --max 25`
+
 ### PowerShell Quoting (Important)
 
 - Quoted paths are strings, not commands. Use the call operator `&` when quoting:
@@ -91,4 +100,3 @@ This doc captures the practical gotchas we hit while running the C++ benchmark a
   - Rebuild: `cmake --build build --config Release --target eddy parakeet_cli benchmark_librispeech`.
   - If OpenVINO not found: set `OpenVINO_DIR` to `C:\\Program Files (x86)\\Intel\\openvino_2025.0.0\\runtime\\cmake`.
   - Use `--min-wer` to save focused JSON for regression triage.
-

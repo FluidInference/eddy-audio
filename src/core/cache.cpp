@@ -32,12 +32,7 @@ std::filesystem::path get_cache_dir() {
     throw std::runtime_error("Failed to get Windows LocalAppData directory");
 
 #elif defined(__APPLE__)
-    // macOS: Use ~/Library/Caches
-    const char* home = std::getenv("HOME");
-    if (!home) {
-        throw std::runtime_error("Failed to get HOME directory");
-    }
-    return std::filesystem::path(home) / "Library" / "Caches" / "eddy";
+#   error "Eddy does not support Apple platforms; use FluidAudio (FA) instead."
 
 #else
     // Linux: Use XDG_CACHE_HOME or ~/.cache

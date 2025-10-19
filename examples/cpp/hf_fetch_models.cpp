@@ -23,7 +23,15 @@ struct Options {
   std::string revision = "main";
   fs::path target;  // resolved later (defaults to Eddy cache path)
   std::vector<std::string> files = {
-      // Default to only the vocabulary file unless overridden via --files
+      // Default expected Parakeet OV artifacts
+      "parakeet_melspectogram.xml",
+      "parakeet_melspectogram.bin",
+      "parakeet_encoder.xml",
+      "parakeet_encoder.bin",
+      "parakeet_decoder.xml",
+      "parakeet_decoder.bin",
+      "parakeet_joint.xml",
+      "parakeet_joint.bin",
       "parakeet_vocab.json",
   };
 };
@@ -36,11 +44,7 @@ static fs::path default_cache_dir() {
   }
   return fs::path(local) / "eddy" / "cache" / "models" / "parakeet-v2" / "files";
 #elif defined(__APPLE__)
-  const char* home = std::getenv("HOME");
-  if (!home) {
-    throw std::runtime_error("HOME not set; cannot resolve cache directory on macOS");
-  }
-  return fs::path(home) / "Library" / "Caches" / "eddy" / "models" / "parakeet-v2" / "files";
+# error "Eddy does not support Apple platforms; use FluidAudio (FA) instead."
 #else
   if (const char* xdg = std::getenv("XDG_CACHE_HOME")) {
     return fs::path(xdg) / "eddy" / "models" / "parakeet-v2" / "files";
@@ -151,7 +155,9 @@ static bool download_via_system_curl(const std::string& url, const fs::path& dst
 
 static void print_help(const char* argv0) {
   std::cout << "Usage: " << argv0 << " [--repo <id>] [--rev <rev>] [--target <dir>] [--files <comma-list>]" << '\n'
-            << "Defaults: repo=alexwengg/parakeet-tdt-0.6b-v2-ov, rev=main, target=<eddy cache>, files=parakeet_vocab.json" << '\n';
+            << "Defaults: repo=alexwengg/parakeet-tdt-0.6b-v2-ov, rev=main, target=<eddy cache>, \n"
+            << "          files=parakeet_melspectogram.(xml|bin), parakeet_encoder.(xml|bin), \n"
+            << "                 parakeet_decoder.(xml|bin), parakeet_joint.(xml|bin), parakeet_vocab.json" << '\n';
 }
 
 int main(int argc, char** argv) {

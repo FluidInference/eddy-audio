@@ -15,12 +15,16 @@ if(MSVC)
 endif()
 
 option(EDDY_ENABLE_OPENVINO "Enable OpenVINO backend" ON)
+option(EDDY_ENABLE_WHISPER "Enable Whisper (OpenVINO GenAI) support" OFF)
 option(EDDY_BUILD_EXAMPLES "Build examples" ON)
 option(EDDY_BUILD_CSHARP "Build C# bindings" OFF)
 
 if(EDDY_ENABLE_OPENVINO)
   find_package(OpenVINO REQUIRED COMPONENTS Runtime)
-  find_package(OpenVINOGenAI)  # Optional - only needed for Whisper
+  # Whisper support is opt-in via EDDY_ENABLE_WHISPER
+  if(EDDY_ENABLE_WHISPER)
+    find_package(OpenVINOGenAI REQUIRED)
+  endif()
 endif()
 
 add_library(eddy STATIC)
@@ -50,14 +54,13 @@ if(EDDY_ENABLE_OPENVINO)
   target_sources(eddy PRIVATE
     src/pipelines/audio_utils.cpp
     src/models/parakeet/parakeet_openvino.cpp
-    src/streaming/buffered_streaming_asr.cpp
   )
   target_compile_definitions(eddy PUBLIC EDDY_WITH_OPENVINO=1)
   target_link_libraries(eddy PUBLIC openvino::runtime)
 
   # Link GenAI only if found (for Whisper support)
-  if(OpenVINOGenAI_FOUND)
-    # Whisper example depends on OpenVINO GenAI headers/libraries
+  if(EDDY_ENABLE_WHISPER)
+    # Whisper pipeline: enabled explicitly via flag and requires GenAI
     target_sources(eddy PRIVATE src/pipelines/whisper_pipeline.cpp)
     target_compile_definitions(eddy PUBLIC EDDY_WITH_OPENVINO_GENAI=1)
     target_link_libraries(eddy PUBLIC openvino::genai)
@@ -82,17 +85,16 @@ if(EDDY_BUILD_EXAMPLES)
 endif()
 
 # Build C API shim only when Whisper (GenAI) is available to satisfy symbols
-if(OpenVINOGenAI_FOUND)
-  add_library(eddy_c SHARED src/eddy_c.cpp)
-  target_include_directories(eddy_c
-    PUBLIC
-      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-      $<INSTALL_INTERFACE:include>
-  )
-  target_link_libraries(eddy_c PRIVATE eddy)
-  target_compile_definitions(eddy_c PRIVATE EDDY_BUILD_SHARED=1)
-  install(TARGETS eddy_c RUNTIME DESTINATION bin LIBRARY DESTINATION lib ARCHIVE DESTINATION lib)
-endif()
+# C API shim (always build; Whisper calls are no-ops unless EDDY_ENABLE_WHISPER)
+add_library(eddy_c SHARED src/eddy_c.cpp)
+target_include_directories(eddy_c
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(eddy_c PRIVATE eddy)
+target_compile_definitions(eddy_c PRIVATE EDDY_BUILD_SHARED=1)
+install(TARGETS eddy_c RUNTIME DESTINATION bin LIBRARY DESTINATION lib ARCHIVE DESTINATION lib)
 
 include(CTest)
 # Only add tests if requested and the folder exists

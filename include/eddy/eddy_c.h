@@ -29,6 +29,7 @@ extern "C" {
 
 // Opaque handle types
 typedef void* EddyWhisperPipeline;
+typedef void* EddyParakeetModel;
 
 /**
  * @brief Configuration for Whisper pipeline
@@ -168,6 +169,31 @@ EDDY_API void eddy_whisper_free_result(EddyWhisperResult* result);
  * @param str String to free
  */
 EDDY_API void eddy_free_string(char* str);
+
+// -----------------------------
+// Parakeet (OpenVINO) C API
+// -----------------------------
+
+typedef struct {
+    const char* device;      // "CPU", "GPU", "NPU", or "AUTO"
+    const char* model_dir;   // Directory containing parakeet_*.xml/bin/json; NULL to use Eddy cache
+    int blank_token_id;      // Typically 1024
+} EddyParakeetConfig;
+
+typedef struct {
+    char* text;          // must be freed with eddy_parakeet_free_result
+    int* token_ids;      // must be freed with eddy_parakeet_free_result
+    size_t num_tokens;
+    float confidence;
+    double latency_ms;
+} EddyParakeetResult;
+
+EDDY_API EddyParakeetModel eddy_parakeet_create(EddyParakeetConfig config, char** error_message);
+EDDY_API void eddy_parakeet_destroy(EddyParakeetModel model);
+EDDY_API EddyError eddy_parakeet_infer_file(EddyParakeetModel model, const char* wav_path, EddyParakeetResult* result, char** error_message);
+EDDY_API EddyError eddy_parakeet_infer_buffer(EddyParakeetModel model, const float* pcm, size_t length, int sample_rate, EddyParakeetResult* result, char** error_message);
+EDDY_API char* eddy_parakeet_decode_tokens(EddyParakeetModel model, const int* token_ids, size_t count);
+EDDY_API void eddy_parakeet_free_result(EddyParakeetResult* result);
 
 // Utility
 

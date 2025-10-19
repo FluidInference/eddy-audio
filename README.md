@@ -2,6 +2,10 @@
 
 eddy is a C++ inference library designed for native runtimes and multi-vendor edge NPUs, exposing a consistent C++ API plus language bindings for app developers (C#; more to follow). The current milestone focuses on the OpenVINO 2025.x backend for the Parakeet-TDT speech model family while we bring additional runtimes online.
 
+## Platform Support
+- Supported: Windows and Linux.
+- Not supported: Apple platforms (macOS/iOS). For Apple, use FluidAudio (FA).
+
 ## Repository Layout
 - `include/` – public headers for the runtime, backend abstractions, and model bridges.
 - `src/` – backend/runtime implementations and model-specific glue code.
@@ -14,6 +18,22 @@ cmake --build build
 ```
 
 The build emits the static target `eddy` with OpenVINO linked in when `EDDY_ENABLE_OPENVINO=ON` (default).
+
+Optional Whisper (OpenVINO GenAI) support is disabled by default. Enable with:
+```
+cmake -S . -B build -DEDDY_ENABLE_OPENVINO=ON -DEDDY_ENABLE_WHISPER=ON -DOpenVINOGenAI_DIR="<path-to-genai-cmake>"
+```
+
+## Fetch Models (no Python)
+- Windows PowerShell (recommended):
+```
+powershell -ExecutionPolicy Bypass -File scripts\setup_parakeet_models.ps1
+```
+- Manual: build and run the C++ fetcher
+```
+cmake --build build --config Release --target hf_fetch_models
+build/examples/cpp/Release/hf_fetch_models.exe --repo alexwengg/parakeet-tdt-0.6b-v2-ov --target "%LOCALAPPDATA%\eddy\cache\models\parakeet-v2\files"
+```
 
 ## Parakeet OpenVINO Prototype
 Refer to `docs/parakeet_openvino.md` for instructions on pulling the exported model from Hugging Face and running a smoke test through the new `OpenVINOParakeet` wrapper.

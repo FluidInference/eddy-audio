@@ -1,82 +1,56 @@
-# AGENTS.md
+# Repository Guidelines
 
-Guidelines for working in this repo as an automated agent.
+## Project Structure & Module Organization
 
-## After Editing Parakeet/OpenVINO Code
+- Source: `src/` (core, backends, `models/parakeet/`, pipelines, streaming) and public headers in `include/`.
+- Examples: `examples/cpp/` (`parakeet_cli.cpp`, `benchmark_librispeech.cpp`, optional `whisper_example.cpp`).
+- Build system: CMake files at repository root and `examples/`.
+- Scripts & docs: `scripts/` (model fetch), `docs/` (e.g., `docs/Benchmark-Troubleshooting.md`).
+- Assets/models: sample WAVs in root; model cache lives under user cache, not in repo.
 
-When you touch code under `src/models/parakeet/` or related headers, make sure to:
+## Build, Test, and Development Commands
 
-1) Clear compiled caches (KEEP model files)
+- Configure: `cmake -B build -S . -DCMAKE_BUILD_TYPE=Release -DEDDY_ENABLE_OPENVINO=ON`
+- Build libs + tools: `cmake --build build --config Release --target eddy parakeet_cli benchmark_librispeech`
+- Run CLI (NPU): `build\examples\cpp\Release\parakeet_cli.exe "<path-to-wav>" --device NPU`
+- Benchmark (NPU): `build\examples\cpp\Release\benchmark_librispeech.exe --max-files 50 --device NPU`
+- Optional tests: If a `tests/` subtree is added, enable with `-DBUILD_TESTING=ON` and run `ctest --test-dir build`.
+ - Optional Whisper (GenAI): add `-DEDDY_ENABLE_WHISPER=ON` and provide `OpenVINOGenAI_DIR` if not discoverable.
 
-- Windows PowerShell
-  - This removes compiled blobs under the Parakeet model cache while preserving `files/` with the downloaded models.
-  - Path: `%LOCALAPPDATA%\eddy\cache\models\parakeet-v2`
+## Coding Style & Naming Conventions
 
-```
-$base = Join-Path $env:LOCALAPPDATA 'eddy\cache\models\parakeet-v2'
-if (Test-Path $base) {
-  Get-ChildItem -LiteralPath $base -File -Force | Remove-Item -Force -ErrorAction SilentlyContinue
-  Get-ChildItem -LiteralPath $base -Directory -Force |
-    Where-Object { $_.Name -ne 'files' } |
-    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-}
-```
+- C++20, consistent with existing code. Use 2-space indentation, braces on same line.
+- Types/classes: `PascalCase`; functions/variables/files: `snake_case` (e.g., `parakeet_openvino.cpp`).
+- Keep headers under `include/eddy/...` mirrored by sources under `src/...`.
+- Prefer small, focused functions; avoid inline comments unless clarifying non-obvious logic.
 
-- Bash (Linux/macOS) — adapt path per platform
-```
-BASE="$HOME/.cache/eddy/models/parakeet-v2"  # or $XDG_CACHE_HOME/eddy/models/parakeet-v2
-find "$BASE" -maxdepth 1 -type f -print -delete
-find "$BASE" -mindepth 1 -maxdepth 1 -type d ! -name files -print -exec rm -rf {} +
-```
+## Testing Guidelines
 
-Do NOT delete the `files/` subfolder. That folder contains the model XML/BIN/JSON.
+- Add targeted unit or integration tests under `tests/` when feasible. Name files `<area>_test.cpp`.
+- For manual checks, use `parakeet_cli` and `benchmark_librispeech` with short WAVs and limited file counts.
+- Aim to keep new logic covered; document any gaps in the PR.
 
-2) Rebuild the targets
+## Commit & Pull Request Guidelines
 
-```
-cmake --build build --config Release --target eddy parakeet_cli benchmark_librispeech
-```
+- Commit subject: imperative mood with optional scope, e.g., `parakeet: fix encoder port selection`.
+- Keep changes focused; include rationale and before/after behavior in the body.
+- PRs should include: summary, reproduction/validation steps, screenshots or logs, target device (CPU/GPU/NPU), and linked issues.
 
-3) First run after cache clear
+## Agent-Specific Instructions (Parakeet/OpenVINO)
 
-- The first NPU/GPU run will recompile models and can take a few minutes.
-- Subsequent runs will use the newly built code and the fresh compiled cache.
+- After editing `src/models/parakeet/` or related headers, clear compiled caches but keep downloaded models.
+  - Windows cache: `%LOCALAPPDATA%\eddy\cache\models\parakeet-v2` (preserve `files/`). Quick PowerShell:
+    ``$b="$env:LOCALAPPDATA\eddy\cache\models\parakeet-v2"; if(Test-Path $b){ Get-ChildItem $b -File|Remove-Item -Force; Get-ChildItem $b -Directory|? Name -ne 'files'|Remove-Item -Recurse -Force }``
+- Rebuild: `cmake --build build --config Release --target eddy parakeet_cli benchmark_librispeech`.
+- First run after a cache clear will recompile models and may take minutes.
 
-## Optional: Run Quick Checks
+## Configuration & Models
 
-- Single file (NPU):
-```
-build\examples\cpp\Release\parakeet_cli.exe "<path-to-wav>" --device NPU
-```
-
-- Benchmark (NPU):
-```
-build\examples\cpp\Release\benchmark_librispeech.exe --max-files 50 --device NPU
-```
-
-## Environment Knobs (for chunking/dedup)
-
-- `EDDY_CONTEXT_FRAMES` (default `20`): overlap uses `2 * context_frames`.
-- `EDDY_BOUNDARY_SEARCH_FRAMES` (default `20`): boundary window for duplicate search.
-- `EDDY_DISABLE_HOLDBACK=1`: disable right-context holdback; rely on overlap dedup only.
-
-## Model Download (if missing)
-
-- Python helper:
-```
-python scripts\fetch_parakeet_ov.py
-```
-- Or use the setup script to fetch models and rebuild:
-```
-powershell -ExecutionPolicy Bypass -File scripts\setup_parakeet_models.ps1
-```
-p.s. A longer, end‑to‑end run/troubleshooting guide (including PowerShell quoting, OpenVINO setupvars usage, JSON filters, and multi‑chunk logs) lives at:
-
-- `docs/Benchmark-Troubleshooting.md`
-
-### Agent Quick Notes
-
-- Use `run_bench_npu.bat` to ensure NPU runs always load the OpenVINO environment first.
-- If `OpenVINO_DIR` is needed, default to: `C:\\Program Files (x86)\\Intel\\openvino_2025.0.0\\runtime\\cmake`.
-- For focused regression JSON, use `--min-wer 10` to include only high‑WER cases in the output file.
-
+- OpenVINO env: use `run_bench_npu.bat` to preload environment. If needed, `OpenVINO_DIR` default: `C:\Program Files (x86)\Intel\openvino_2025.0.0\runtime\cmake`.
+- GenAI (Whisper) CMake hint: set `OpenVINOGenAI_DIR` to the GenAI CMake package path when `EDDY_ENABLE_WHISPER=ON`.
+- Model download (recommended, no Python):
+  - Windows PowerShell:
+    `powershell -ExecutionPolicy Bypass -File scripts\setup_parakeet_models.ps1`
+    Downloads `parakeet_melspectogram.(xml|bin)`, `parakeet_encoder.(xml|bin)`, `parakeet_decoder.(xml|bin)`, `parakeet_joint.(xml|bin)`, `parakeet_vocab.json` into `%LOCALAPPDATA%\eddy\cache\models\parakeet-v2\files`.
+  - Cross‑platform: build and run `hf_fetch_models` with `--target` pointing to your cache dir.
+- Runtime knobs: `EDDY_OV_PERF`, `EDDY_OV_NUM_REQUESTS`, `EDDY_OV_THREADS`, `EDDY_OV_PRECISION`, plus chunking/dedup controls `EDDY_CONTEXT_FRAMES`, `EDDY_BOUNDARY_SEARCH_FRAMES`, `EDDY_DISABLE_HOLDBACK=1`.
