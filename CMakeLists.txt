@@ -54,6 +54,7 @@ if(EDDY_ENABLE_OPENVINO)
   target_sources(eddy PRIVATE
     src/pipelines/audio_utils.cpp
     src/models/parakeet/parakeet_openvino.cpp
+    src/models/parakeet/ensure_models.cpp
   )
   target_compile_definitions(eddy PUBLIC EDDY_WITH_OPENVINO=1)
   target_link_libraries(eddy PUBLIC openvino::runtime)

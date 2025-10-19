@@ -45,7 +45,7 @@ This doc captures the practical gotchas we hit while running the C++ benchmark a
 1) Clean everything (build, local models, cached models):
    - Delete `build\`
    - Delete `models\parakeet\`
-   - Delete `%LOCALAPPDATA%\eddy\cache\models\parakeet-v2\`
+   - Delete `%LOCALAPPDATA%\eddy\models\parakeet-v2\`
 2) Configure + build:
    - `cmake -S . -B build -G "Visual Studio 17 2022" -A x64`
    - `cmake --build build --config Release --target eddy parakeet_cli benchmark_librispeech`
@@ -54,7 +54,7 @@ This doc captures the practical gotchas we hit while running the C++ benchmark a
 
 ### Clear Compiled Cache (Keep Models)
 
-- See `AGENTS.md` for exact commands. In short, remove files/directories in `%LOCALAPPDATA%\eddy\cache\models\parakeet-v2` except `files\`.
+- See `AGENTS.md` for exact commands. In short, remove files/directories in `%LOCALAPPDATA%\eddy\models\parakeet-v2` except `files\`.
 
 ### JSON Output, Filters, and Chunk Logs
 

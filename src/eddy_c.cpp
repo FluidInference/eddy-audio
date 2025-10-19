@@ -11,6 +11,7 @@
 #include "eddy/core/cache.hpp"
 #include "eddy/models/parakeet/parakeet.hpp"
 #include "eddy/models/parakeet/parakeet_openvino.hpp"
+#include "eddy/models/parakeet/ensure_models.hpp"
 #include "eddy/pipelines/audio_utils.hpp"
 
 #include <cstring>
@@ -279,15 +280,23 @@ EDDY_API EddyParakeetModel eddy_parakeet_create(EddyParakeetConfig config, char*
         std::string device = config.device ? config.device : "CPU";
 
         auto backend = std::make_shared<eddy::OpenVINOBackend>(
-            eddy::OpenVINOOptions{ .device = device, .cache_dir = eddy::get_model_cache_dir("parakeet-v2").string() }
+            eddy::OpenVINOOptions{ .device = device, .cache_dir = eddy::get_model_dir("parakeet-v2").string() }
         );
 
-        // Resolve model directory: prefer explicit, else cache
+        // Resolve model directory: prefer explicit, else cache and ensure availability
         std::filesystem::path model_dir;
         if (config.model_dir && std::string(config.model_dir).size() > 0) {
             model_dir = config.model_dir;
         } else {
-            model_dir = eddy::get_model_files_dir("parakeet-v2");
+            model_dir = eddy::get_model_assets_dir("parakeet-v2");
+            std::string err;
+            (void)eddy::parakeet::ensure_models_available(model_dir, &err);
+#if defined(_WIN32)
+            if (!std::filesystem::exists(model_dir)) {
+                auto legacy = eddy::get_app_data_dir() / "cache" / "models" / "parakeet-v2" / "files";
+                if (std::filesystem::exists(legacy)) model_dir = legacy;
+            }
+#endif
         }
 
         eddy::parakeet::ModelPaths paths{

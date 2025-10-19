@@ -13,29 +13,26 @@
 
 namespace eddy {
 
-std::filesystem::path get_cache_dir() {
+std::filesystem::path get_app_data_dir() {
 #ifdef _WIN32
-    // Windows: Use LOCALAPPDATA
+    // Windows: %LOCALAPPDATA%\eddy
     wchar_t* localAppData = nullptr;
     if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &localAppData))) {
-        std::filesystem::path cache_path = localAppData;
+        std::filesystem::path base = localAppData;
         CoTaskMemFree(localAppData);
-        return cache_path / "eddy" / "cache";
+        return base / "eddy";
     }
 
     // Fallback: Use %LOCALAPPDATA% environment variable
     const char* localAppDataEnv = std::getenv("LOCALAPPDATA");
     if (localAppDataEnv) {
-        return std::filesystem::path(localAppDataEnv) / "eddy" / "cache";
+        return std::filesystem::path(localAppDataEnv) / "eddy";
     }
 
     throw std::runtime_error("Failed to get Windows LocalAppData directory");
 
-#elif defined(__APPLE__)
-#   error "Eddy does not support Apple platforms; use FluidAudio (FA) instead."
-
 #else
-    // Linux: Use XDG_CACHE_HOME or ~/.cache
+    // Linux: Use XDG_CACHE_HOME or ~/.cache (keep cache semantics on Linux)
     const char* xdg_cache = std::getenv("XDG_CACHE_HOME");
     if (xdg_cache) {
         return std::filesystem::path(xdg_cache) / "eddy";
@@ -49,15 +46,22 @@ std::filesystem::path get_cache_dir() {
 #endif
 }
 
-std::filesystem::path get_model_cache_dir(const std::string& model_name) {
-    return get_cache_dir() / "models" / model_name;
+std::filesystem::path get_models_dir() {
+    return get_app_data_dir() / "models";
 }
 
-std::filesystem::path get_model_files_dir(const std::string& model_name) {
-    // Model files go in cache/models/<name>/files/
-    // Compiled cache goes in cache/models/<name>/ (set via ov::cache_dir)
-    return get_cache_dir() / "models" / model_name / "files";
+std::filesystem::path get_model_dir(const std::string& model_name) {
+    return get_models_dir() / model_name;
 }
+
+std::filesystem::path get_model_assets_dir(const std::string& model_name) {
+    return get_model_dir(model_name) / "files";
+}
+
+// Backward-compat aliases
+std::filesystem::path get_cache_dir() { return get_app_data_dir(); }
+std::filesystem::path get_model_cache_dir(const std::string& model_name) { return get_model_dir(model_name); }
+std::filesystem::path get_model_files_dir(const std::string& model_name) { return get_model_assets_dir(model_name); }
 
 bool ensure_cache_dir(const std::filesystem::path& path) {
     std::error_code ec;

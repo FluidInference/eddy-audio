@@ -5,6 +5,7 @@
 #include "eddy/core/cache.hpp"
 #include "eddy/models/parakeet/parakeet.hpp"
 #include "eddy/models/parakeet/parakeet_openvino.hpp"
+#include "eddy/models/parakeet/ensure_models.hpp"
 #include "eddy/pipelines/audio_utils.hpp"
 #include "text_normalizer.hpp"
 
@@ -523,22 +524,54 @@ int main(int argc, char* argv[]) {
         // Initialize OpenVINO backend
         std::cout << "Initializing OpenVINO backend (" << device << ") ... ";
         std::cout.flush();
-        auto compiled_cache_dir = eddy::get_model_cache_dir("parakeet-v2").string();
+        auto compiled_cache_dir = eddy::get_model_dir("parakeet-v2").string();
         auto backend = std::make_shared<eddy::OpenVINOBackend>(
             eddy::OpenVINOOptions{.device = device, .cache_dir = compiled_cache_dir}
         );
         std::cout << "[OK]\n";
 
-        // Load models
-        auto cache_model_dir = eddy::get_model_files_dir("parakeet-v2");
+        // Load models (ensure cache populated if possible)
+        auto cache_model_dir = eddy::get_model_assets_dir("parakeet-v2");
         fs::path model_dir;
 
-        if (fs::exists(cache_model_dir / "parakeet_encoder.xml")) {
+        auto exists_nonempty = [](const fs::path& p) -> bool {
+            std::error_code ec; return fs::exists(p, ec) && fs::is_regular_file(p, ec) && fs::file_size(p, ec) > 0;
+        };
+
+        {
+            std::string fetch_err;
+            (void)eddy::parakeet::ensure_models_available(cache_model_dir, &fetch_err);
+            if (!fetch_err.empty()) std::cout << "[INFO] " << fetch_err << "\n";
+        }
+
+        if (exists_nonempty(cache_model_dir / "parakeet_encoder.xml")) {
             model_dir = cache_model_dir;
-            std::cout << "Using cached models\n";
+            std::cout << "Using cached models at: " << model_dir.string() << "\n";
         } else {
-            model_dir = "models/parakeet";
-            std::cout << "Using local models\n";
+            // Legacy Windows path fallback
+#if defined(_WIN32)
+            auto legacy = eddy::get_app_data_dir() / "cache" / "models" / "parakeet-v2" / "files";
+            if (exists_nonempty(legacy / "parakeet_encoder.xml")) {
+                model_dir = legacy;
+                std::cout << "Using legacy cached models at: " << model_dir.string() << "\n";
+            } else
+#endif
+            {
+                fs::path local_models = "models/parakeet";
+                if (exists_nonempty(local_models / "parakeet_encoder.xml")) {
+                    model_dir = local_models;
+                    std::cout << "Using local models at: " << model_dir.string() << "\n";
+                } else {
+                    std::cerr << "\nERROR: Parakeet model files not found.\n"
+                              << " - Expected at: " << cache_model_dir.string() << " (user models)\n"
+#if defined(_WIN32)
+                              << " - Or legacy:   " << (eddy::get_app_data_dir() / "cache" / "models" / "parakeet-v2" / "files").string() << "\n"
+#endif
+                              << " - Or project:  models/\n\n"
+                              << "Run: powershell -ExecutionPolicy Bypass -File scripts\\setup_parakeet_models.ps1\n";
+                    return 2;
+                }
+            }
         }
 
         eddy::parakeet::ModelPaths paths{

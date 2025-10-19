@@ -42,7 +42,7 @@ static fs::path default_cache_dir() {
   if (!local) {
     throw std::runtime_error("LOCALAPPDATA not set; cannot resolve cache directory on Windows");
   }
-  return fs::path(local) / "eddy" / "cache" / "models" / "parakeet-v2" / "files";
+  return fs::path(local) / "eddy" / "models" / "parakeet-v2" / "files";
 #elif defined(__APPLE__)
 # error "Eddy does not support Apple platforms; use FluidAudio (FA) instead."
 #else

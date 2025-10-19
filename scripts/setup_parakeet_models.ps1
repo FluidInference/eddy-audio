@@ -18,10 +18,10 @@ if (-not (Test-Path -LiteralPath $exe)) {
   throw "hf_fetch_models.exe not found at $exe"
 }
 
-# Resolve Eddy Parakeet cache target
+# Resolve Eddy Parakeet models target
 $local = $env:LOCALAPPDATA
 if (-not $local) { throw "LOCALAPPDATA not set; cannot resolve cache directory" }
-$target = Join-Path $local "eddy\cache\models\parakeet-v2\files"
+$target = Join-Path $local "eddy\models\parakeet-v2\files"
 New-Item -ItemType Directory -Force -Path $target | Out-Null
 
 Write-Host "[Eddy] Downloading Parakeet OV artifacts to: $target"

@@ -119,13 +119,7 @@ ov::AnyMap make_compile_cfg_from_env() {
   if (const char* th = std::getenv("EDDY_OV_THREADS")) {
     try { int n = std::max(1, std::stoi(th)); cfg[ov::inference_num_threads.name()] = n; } catch (...) {}
   }
-  if (const char* ip = std::getenv("EDDY_OV_PRECISION")) {
-    std::string v(ip);
-    for (auto& c : v) c = static_cast<char>(::toupper(c));
-    if (v == "FP16" || v == "F16") cfg[ov::hint::inference_precision.name()] = ov::element::f16;
-    else if (v == "FP32" || v == "F32") cfg[ov::hint::inference_precision.name()] = ov::element::f32;
-    else if (v == "INT8" || v == "I8") cfg[ov::hint::inference_precision.name()] = ov::element::i8;
-  }
+  // Removed precision hint: rely on device defaults and model precision.
   return cfg;
 }
 
@@ -314,6 +308,12 @@ struct OpenVINOParakeet::Impl {
   // Output indices for encoder outputs (robust retrieval)
   size_t encoder_output_index = 0;   // [1, hidden, time]
   size_t encoder_length_index = 1;   // [1]
+
+  // Preferred port names (configurable via metadata JSON)
+  std::string enc_mel_name = "melspectogram";
+  std::string enc_len_name = "melspectogram_length";
+  std::string enc_out_name = "encoder_output";
+  std::string enc_len_out_name = "encoder_output_length";
 };
 
 OpenVINOParakeet::OpenVINOParakeet(std::shared_ptr<eddy::OpenVINOBackend> backend,
@@ -420,42 +420,79 @@ void OpenVINOParakeet::ensure_compiled_model() {
 
     impl_->tokenizer.load(impl_->model_paths.tokenizer_json, impl_->runtime_cfg.blank_token_id);
 
-    // Resolve encoder ports robustly (supports 10s/15s variants and slight renames)
-    impl_->encoder_ports = select_encoder_ports(impl_->encoder_model);
-    if (!impl_->encoder_ports.mel_in.has_value() || !impl_->encoder_ports.len_in.has_value()) {
-      throw std::runtime_error("Failed to resolve encoder input ports (mel/length)");
+    // Load port names from metadata JSON if present
+    try {
+      const std::filesystem::path enc_path = impl_->model_paths.encoder.path;
+      const std::filesystem::path model_dir = std::filesystem::path(enc_path).parent_path();
+      const std::filesystem::path meta_path = model_dir / "parakeet_metadata.json";
+      if (std::filesystem::exists(meta_path)) {
+        std::ifstream meta_stream(meta_path);
+        nlohmann::json meta_json; meta_stream >> meta_json;
+        if (meta_json.contains("encoder")) {
+          const auto& enc = meta_json["encoder"];
+          if (enc.contains("mel_input")) impl_->enc_mel_name = enc["mel_input"].get<std::string>();
+          if (enc.contains("length_input")) impl_->enc_len_name = enc["length_input"].get<std::string>();
+          if (enc.contains("output")) impl_->enc_out_name = enc["output"].get<std::string>();
+          if (enc.contains("length_output")) impl_->enc_len_out_name = enc["length_output"].get<std::string>();
+        }
+      }
+    } catch (...) {
+      // Ignore metadata errors and continue with defaults
     }
-    if (!impl_->encoder_ports.enc_out.has_value()) {
-      throw std::runtime_error("Failed to resolve encoder output port");
+
+    // Resolve encoder ports by explicit names only (no shape fallbacks)
+    try {
+      impl_->encoder_ports.mel_in = impl_->encoder_model.input(impl_->enc_mel_name);
+    } catch (...) {
+      throw std::runtime_error(std::string("Missing encoder mel input port: ") + impl_->enc_mel_name);
+    }
+    try {
+      impl_->encoder_ports.len_in = impl_->encoder_model.input(impl_->enc_len_name);
+    } catch (...) {
+      throw std::runtime_error(std::string("Missing encoder length input port: ") + impl_->enc_len_name);
+    }
+    try {
+      impl_->encoder_ports.enc_out = impl_->encoder_model.output(impl_->enc_out_name);
+    } catch (...) {
+      throw std::runtime_error(std::string("Missing encoder output port: ") + impl_->enc_out_name);
     }
 
     impl_->encoder_expected_frames = required_length(impl_->encoder_ports.mel_in.value());
 
-    // Determine encoder outputs and hidden size by scanning outputs
+    // Determine encoder output indices by name
     const auto outs = impl_->encoder_model.outputs();
     bool found_output = false;
     bool found_len = false;
     for (size_t i = 0; i < outs.size(); ++i) {
       const auto& p = outs[i];
       try {
-        const auto shape = p.get_shape();
-        if (shape.size() == 3 && !found_output) {
+        // Compare by trying to resolve name to output and then compare pointers
+        const auto named_out = impl_->encoder_model.output(impl_->enc_out_name);
+        if (p == named_out) {
           impl_->encoder_output_index = i;
-          if (shape[1] == 0) {
+          const auto shape = p.get_shape();
+          if (shape.size() >= 2 && shape[1] == 0) {
             throw std::runtime_error("Encoder hidden size is zero");
           }
-          impl_->encoder_hidden_size = shape[1];
+          if (shape.size() >= 2) impl_->encoder_hidden_size = shape[1];
           found_output = true;
-        } else if (shape.size() == 1 && !found_len) {
-          impl_->encoder_length_index = i;
-          found_len = true;
         }
-      } catch (...) {
-        // ignore
+      } catch (...) {}
+      if (!found_len) {
+        try {
+          const auto named_len = impl_->encoder_model.output(impl_->enc_len_out_name);
+          if (p == named_len) {
+            impl_->encoder_length_index = i;
+            found_len = true;
+          }
+        } catch (...) {}
       }
     }
     if (!found_output) {
-      throw std::runtime_error("Failed to locate encoder main output [1, hidden, time]");
+      throw std::runtime_error(std::string("Failed to locate encoder output: ") + impl_->enc_out_name);
+    }
+    if (!found_len) {
+      throw std::runtime_error(std::string("Failed to locate encoder length output: ") + impl_->enc_len_out_name);
     }
 
     const auto decoder_state_shape = impl_->decoder_model.input("h_in").get_shape();
