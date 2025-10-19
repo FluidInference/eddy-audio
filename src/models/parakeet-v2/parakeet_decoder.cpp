@@ -11,6 +11,10 @@
 
 namespace eddy::parakeet {
 
+// Named constants for decoder behavior
+constexpr size_t DEFAULT_MAX_ADDITIONAL_STEPS = 8;
+constexpr size_t DEFAULT_MAX_CONSECUTIVE_BLANKS = 1;
+
 void initialize_decoder_state(ParakeetImpl& impl,
                               DecoderState& state,
                               int blank_token_id,
@@ -56,20 +60,37 @@ void finalize_chunk_decoding(ParakeetImpl& impl,
                              std::vector<TokenTiming>& timings,
                              double& t_decoder_ms,
                              double& t_joint_ms,
-                             DecoderState& state) {
+                             DecoderState& state,
+                             size_t max_tokens) {
   const size_t valid_frames = std::min(encoder.valid_frames, encoder.time_steps);
   if (valid_frames == 0) return;
   const size_t last_frame = valid_frames > 0 ? (valid_frames - 1) : 0;
   size_t additional_steps = 0;
   size_t consecutive_blanks = 0;
-  size_t max_additional_steps = 8;
-  size_t max_consecutive_blanks = 1;
-  if (const char* env_steps = std::getenv("EDDY_MAX_ADDITIONAL_STEPS")) { try { int v = std::stoi(env_steps); if (v >= 0) max_additional_steps = static_cast<size_t>(v); } catch (...) {} }
-  if (const char* env_blanks = std::getenv("EDDY_MAX_CONSEC_BLANKS")) { try { int v = std::stoi(env_blanks); if (v >= 1) max_consecutive_blanks = static_cast<size_t>(v); } catch (...) {} }
+  size_t max_additional_steps = DEFAULT_MAX_ADDITIONAL_STEPS;
+  size_t max_consecutive_blanks = DEFAULT_MAX_CONSECUTIVE_BLANKS;
+  if (const char* env_steps = std::getenv("EDDY_MAX_ADDITIONAL_STEPS")) {
+    try {
+      int v = std::stoi(env_steps);
+      if (v >= 0) max_additional_steps = static_cast<size_t>(v);
+    } catch (const std::exception& e) {
+      std::cerr << "[WARN] Invalid EDDY_MAX_ADDITIONAL_STEPS value '" << env_steps << "', using default\n";
+    }
+  }
+  if (const char* env_blanks = std::getenv("EDDY_MAX_CONSEC_BLANKS")) {
+    try {
+      int v = std::stoi(env_blanks);
+      if (v >= 1) max_consecutive_blanks = static_cast<size_t>(v);
+    } catch (const std::exception& e) {
+      std::cerr << "[WARN] Invalid EDDY_MAX_CONSEC_BLANKS value '" << env_blanks << "', using default\n";
+    }
+  }
 
   ov::Tensor joint_enc_in = impl.joint_request.get_input_tensor(0);
   ov::Tensor joint_dec_in = impl.joint_request.get_input_tensor(1);
-  while (additional_steps < max_additional_steps && consecutive_blanks < max_consecutive_blanks) {
+  while (additional_steps < max_additional_steps &&
+         consecutive_blanks < max_consecutive_blanks &&
+         tokens.size() < max_tokens) {
     ov::Tensor decoder_output;
     ov::Tensor next_hidden;
     ov::Tensor next_cell;
@@ -97,6 +118,13 @@ void finalize_chunk_decoding(ParakeetImpl& impl,
     }
     const float* enc = encoder.tensor.data<float>();
     float* dst = joint_enc_in.data<float>();
+    // Bounds check: verify we can read the last channel's last frame
+    const size_t max_offset = (impl.encoder_hidden_size - 1) * encoder.time_steps + last_frame;
+    if (max_offset >= encoder.tensor.get_size()) {
+      throw std::runtime_error("Encoder tensor access out of bounds: offset=" +
+                               std::to_string(max_offset) +
+                               " size=" + std::to_string(encoder.tensor.get_size()));
+    }
     for (size_t channel = 0; channel < impl.encoder_hidden_size; ++channel) {
       const size_t off = channel * encoder.time_steps + last_frame;
       dst[channel] = enc[off];
@@ -257,6 +285,13 @@ DecoderResult run_greedy_decoder(ParakeetImpl& impl,
       {
         const float* enc = encoder.tensor.data<float>();
         float* dst = joint_enc_in.data<float>();
+        // Bounds check: verify we can read the last channel's current frame
+        const size_t max_offset = (impl.encoder_hidden_size - 1) * encoder.time_steps + frame_index;
+        if (max_offset >= encoder.tensor.get_size()) {
+          throw std::runtime_error("Encoder tensor access out of bounds in inner loop: offset=" +
+                                   std::to_string(max_offset) +
+                                   " size=" + std::to_string(encoder.tensor.get_size()));
+        }
         for (size_t channel = 0; channel < impl.encoder_hidden_size; ++channel) {
           const size_t offset = channel * encoder.time_steps + frame_index;
           dst[channel] = enc[offset];
@@ -350,7 +385,8 @@ DecoderResult run_greedy_decoder(ParakeetImpl& impl,
   if (is_last_chunk) {
     finalize_chunk_decoding(impl, encoder, vocab_size, tokens_offset, track_confidence,
                             hidden_state, cell_state, token_input, targets_et,
-                            last_token, tokens, timings, t_decoder_ms, t_joint_ms, state);
+                            last_token, tokens, timings, t_decoder_ms, t_joint_ms, state,
+                            options.max_tokens);
   }
 
   // Per-file TDT stats removed (keep benchmark end summary only)

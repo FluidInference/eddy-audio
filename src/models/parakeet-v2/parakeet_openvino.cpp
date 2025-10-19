@@ -36,10 +36,20 @@ ov::AnyMap make_compile_cfg_from_env() {
     else if (v == "THROUGHPUT") cfg[ov::hint::performance_mode.name()] = ov::hint::PerformanceMode::THROUGHPUT;
   }
   if (const char* nr = std::getenv("EDDY_OV_NUM_REQUESTS")) {
-    try { int n = std::max(1, std::stoi(nr)); cfg[ov::hint::num_requests.name()] = n; } catch (...) {}
+    try {
+      int n = std::max(1, std::stoi(nr));
+      cfg[ov::hint::num_requests.name()] = n;
+    } catch (const std::exception& e) {
+      std::cerr << "[WARN] Invalid EDDY_OV_NUM_REQUESTS value '" << nr << "', using default\n";
+    }
   }
   if (const char* th = std::getenv("EDDY_OV_THREADS")) {
-    try { int n = std::max(1, std::stoi(th)); cfg[ov::inference_num_threads.name()] = n; } catch (...) {}
+    try {
+      int n = std::max(1, std::stoi(th));
+      cfg[ov::inference_num_threads.name()] = n;
+    } catch (const std::exception& e) {
+      std::cerr << "[WARN] Invalid EDDY_OV_THREADS value '" << th << "', using default\n";
+    }
   }
   // Removed precision hint: rely on device defaults and model precision.
   return cfg;

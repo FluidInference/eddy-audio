@@ -23,6 +23,36 @@
 namespace fs = std::filesystem;
 
 // ============================================================================
+// Path Validation (Security)
+// ============================================================================
+
+/// Validate a user-provided path to prevent path traversal attacks
+/// Returns the canonical path if valid, throws if invalid
+fs::path validate_user_path(const std::string& user_path, const std::string& description) {
+    if (user_path.empty()) {
+        throw std::runtime_error(description + ": path is empty");
+    }
+
+    // Check for suspicious patterns that could indicate path traversal
+    if (user_path.find("..") != std::string::npos) {
+        throw std::runtime_error(description + ": path contains '..' (path traversal not allowed)");
+    }
+
+    // Convert to absolute path and canonicalize to resolve symlinks
+    fs::path abs_path = fs::absolute(user_path);
+
+    std::error_code ec;
+    fs::path canonical_path = fs::canonical(abs_path, ec);
+
+    if (ec) {
+        // If canonicalization fails, the path doesn't exist or is invalid
+        throw std::runtime_error(description + ": invalid path '" + user_path + "' - " + ec.message());
+    }
+
+    return canonical_path;
+}
+
+// ============================================================================
 // Text Normalization and WER/CER Calculation
 // ============================================================================
 
@@ -485,8 +515,10 @@ int main(int argc, char* argv[]) {
     try {
         // Load normalization dictionary (if provided or found in known locations)
         if (!normalizer_dict_path.empty()) {
-            g_normalizer.load_variants_json(normalizer_dict_path);
-            std::cout << "Loaded normalizer dict: " << normalizer_dict_path << "\n\n";
+            // Validate user-provided path to prevent path traversal
+            fs::path validated_path = validate_user_path(normalizer_dict_path, "Normalizer dictionary");
+            g_normalizer.load_variants_json(validated_path.string());
+            std::cout << "Loaded normalizer dict: " << validated_path << "\n\n";
         } else {
             fs::path repo_default = fs::path("FluidAudio") / "Sources" / "FluidAudioCLI" / "Utils" / "english.json";
             fs::path examples_default = fs::path("examples") / "cpp" / "english.json";
@@ -748,7 +780,7 @@ int main(int argc, char* argv[]) {
         std::cout << std::string(80, '=') << "\n\n";
 
         // Comparison
-        std::cout << "Expected (FluidAudio v2): 2.2% WER, 141x RTFx\n";
+        std::cout << "FluidAudio ASR v2 full run: 2.2% WER, 141x RTFx\n";
         std::cout << std::setprecision(1);
         std::cout << "performance:    " << (avg_wer * 100) << "% WER, " << overall_rtfx << "x RTFx\n\n";
 

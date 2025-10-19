@@ -17,7 +17,8 @@ std::filesystem::path get_app_data_dir() {
 #ifdef _WIN32
     // Windows: %LOCALAPPDATA%\eddy
     wchar_t* localAppData = nullptr;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &localAppData))) {
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &localAppData)) &&
+        localAppData != nullptr) {
         std::filesystem::path base = localAppData;
         CoTaskMemFree(localAppData);
         return base / "eddy";
@@ -25,22 +26,22 @@ std::filesystem::path get_app_data_dir() {
 
     // Fallback: Use %LOCALAPPDATA% environment variable
     const char* localAppDataEnv = std::getenv("LOCALAPPDATA");
-    if (localAppDataEnv) {
+    if (localAppDataEnv != nullptr) {
         return std::filesystem::path(localAppDataEnv) / "eddy";
     }
 
-    throw std::runtime_error("Failed to get Windows LocalAppData directory");
+    throw std::runtime_error("Failed to get Windows LocalAppData directory: both API and environment variable failed");
 
 #else
-    // Linux: Use XDG_CACHE_HOME or ~/.cache (keep cache semantics on Linux)
+    // Linux/Unix: Use XDG_CACHE_HOME or ~/.cache
     const char* xdg_cache = std::getenv("XDG_CACHE_HOME");
-    if (xdg_cache) {
+    if (xdg_cache != nullptr) {
         return std::filesystem::path(xdg_cache) / "eddy";
     }
 
     const char* home = std::getenv("HOME");
-    if (!home) {
-        throw std::runtime_error("Failed to get HOME directory");
+    if (home == nullptr) {
+        throw std::runtime_error("Failed to get cache directory: both XDG_CACHE_HOME and HOME are unavailable");
     }
     return std::filesystem::path(home) / ".cache" / "eddy";
 #endif

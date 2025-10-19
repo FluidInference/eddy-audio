@@ -9,16 +9,23 @@ namespace eddy::parakeet {
 
 namespace {
 
+// Named constants for deduplication and chunking
+constexpr size_t DEFAULT_DEDUP_WINDOW = 15;
+constexpr size_t DEFAULT_BOUNDARY_SEARCH_FRAMES = 20;  // ~1.6s at 12.5 fps
+constexpr size_t DEFAULT_MAX_OVERLAP_TOKENS = 30;
+
 // Number of previous tokens to consider for exact/partial overlap checks in dedup.
 // Default 15; override with EDDY_DEDUP_PREV_TOKENS (positive integer).
 size_t prev_tail_window_tokens() {
   static size_t cached = []() {
-    size_t def = 15;
+    size_t def = DEFAULT_DEDUP_WINDOW;
     if (const char* e = std::getenv("EDDY_DEDUP_PREV_TOKENS")) {
       try {
         int v = std::stoi(e);
         if (v > 0 && v < 10000) return static_cast<size_t>(v);
-      } catch (...) {}
+      } catch (const std::exception& ex) {
+        std::cerr << "[WARN] Invalid EDDY_DEDUP_PREV_TOKENS value '" << e << "', using default\n";
+      }
     }
     return def;
   }();
@@ -43,7 +50,12 @@ ChunkDeduplicationResult deduplicate_chunk(
   result.emit_end = curr_tokens.size();  // Default: emit everything
 
   // Convert timings to global frame indices by adding the current chunk offset
+  // Check for overflow before adding offset
   for (auto& t : curr_timings) {
+    if (t.frame_index > SIZE_MAX - offset) {
+      throw std::runtime_error("Integer overflow in frame_index adjustment: frame_index=" +
+                               std::to_string(t.frame_index) + " offset=" + std::to_string(offset));
+    }
     t.frame_index += offset;
   }
 
@@ -101,13 +113,23 @@ ChunkDeduplicationResult deduplicate_chunk(
   }
 
   // Parameters (tunable via env):
-  size_t boundary_search_frames = 20;  // ~1.6s at 12.5 fps
+  size_t boundary_search_frames = DEFAULT_BOUNDARY_SEARCH_FRAMES;
   if (const char* env_b = std::getenv("EDDY_BOUNDARY_SEARCH_FRAMES")) {
-    try { int v = std::stoi(env_b); if (v > 0) boundary_search_frames = static_cast<size_t>(v); } catch (...) {}
+    try {
+      int v = std::stoi(env_b);
+      if (v > 0) boundary_search_frames = static_cast<size_t>(v);
+    } catch (const std::exception& e) {
+      std::cerr << "[WARN] Invalid EDDY_BOUNDARY_SEARCH_FRAMES value '" << env_b << "', using default\n";
+    }
   }
-  size_t max_overlap_tokens = 30;      // how many tokens to consider for overlap
+  size_t max_overlap_tokens = DEFAULT_MAX_OVERLAP_TOKENS;
   if (const char* env_o = std::getenv("EDDY_MAX_OVERLAP_TOKENS")) {
-    try { int v = std::stoi(env_o); if (v > 0) max_overlap_tokens = static_cast<size_t>(v); } catch (...) {}
+    try {
+      int v = std::stoi(env_o);
+      if (v > 0) max_overlap_tokens = static_cast<size_t>(v);
+    } catch (const std::exception& e) {
+      std::cerr << "[WARN] Invalid EDDY_MAX_OVERLAP_TOKENS value '" << env_o << "', using default\n";
+    }
   }
 
   // 2) Exact suffix-prefix match (longest-first)
@@ -208,8 +230,8 @@ ChunkDeduplicationResult deduplicate_chunk(
         } else {
           right_context_frames = std::min<size_t>(static_cast<size_t>(v), chunk_size);
         }
-      } catch (...) {
-        // ignore and use default
+      } catch (const std::exception& e) {
+        std::cerr << "[WARN] Invalid EDDY_HOLDBACK_FRAMES value '" << env_hbf << "', using default\n";
       }
     }
     if (!disable_holdback && right_context_frames > 0) {

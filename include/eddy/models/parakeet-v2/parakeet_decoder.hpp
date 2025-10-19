@@ -46,7 +46,8 @@ void finalize_chunk_decoding(ParakeetImpl& impl,
                              std::vector<TokenTiming>& timings,
                              double& t_decoder_ms,
                              double& t_joint_ms,
-                             DecoderState& state);
+                             DecoderState& state,
+                             size_t max_tokens);
 
 // Run greedy TDT decoder on encoder activations
 DecoderResult run_greedy_decoder(ParakeetImpl& impl,
