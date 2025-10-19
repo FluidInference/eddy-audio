@@ -30,15 +30,22 @@ std::vector<float> read_wav(const std::string& filename) {
         throw std::runtime_error("WAV file must be 16kHz, got " + std::to_string(wav.sampleRate) + " Hz");
     }
 
-    const uint64_t n = wav.totalPCMFrameCount;
+  const uint64_t n = wav.totalPCMFrameCount;
 
-    // Read as int16
-    std::vector<int16_t> pcm16(n * wav.channels);
-    drwav_read_pcm_frames_s16(&wav, n, pcm16.data());
-    drwav_uninit(&wav);
+  // Read as float32 directly to avoid intermediate int16 copy
+  std::vector<float> buf(n * wav.channels);
+  drwav_read_pcm_frames_f32(&wav, n, buf.data());
+  drwav_uninit(&wav);
 
-    // Convert to mono float32
-    return pcm16_to_float32(pcm16.data(), n * wav.channels, wav.channels);
+  // Convert to mono float32 (average if stereo)
+  if (wav.channels == 1) return buf;
+
+  const size_t frames = static_cast<size_t>(n);
+  std::vector<float> mono(frames);
+  for (size_t i = 0; i < frames; ++i) {
+    mono[i] = 0.5f * (buf[2 * i] + buf[2 * i + 1]);
+  }
+  return mono;
 }
 
 std::vector<float> pcm16_to_float32(const int16_t* data, size_t size, int channels) {

@@ -41,7 +41,9 @@ target_sources(eddy
     src/core/runtime.cpp
     src/core/model.cpp
     src/core/cache.cpp
-    src/backends/openvino_backend.cpp
+    src/pipelines/audio_utils.cpp
+    src/utils/ensure_models.cpp
+    src/utils/tokenizer.cpp
 )
 
 # Link Windows shell library for cache directory access
@@ -50,11 +52,14 @@ if(WIN32)
 endif()
 
 if(EDDY_ENABLE_OPENVINO)
-  # Core OpenVINO-dependent sources (do not require GenAI)
+  # OpenVINO-dependent sources only when enabled
   target_sources(eddy PRIVATE
-    src/pipelines/audio_utils.cpp
-    src/models/parakeet/parakeet_openvino.cpp
-    src/models/parakeet/ensure_models.cpp
+    src/backends/openvino_backend.cpp
+    src/models/parakeet-v2/parakeet_openvino.cpp
+    src/models/parakeet-v2/parakeet_preprocessor.cpp
+    src/models/parakeet-v2/parakeet_encoder.cpp
+    src/models/parakeet-v2/parakeet_decoder.cpp
+    src/models/parakeet-v2/parakeet_chunking.cpp
   )
   target_compile_definitions(eddy PUBLIC EDDY_WITH_OPENVINO=1)
   target_link_libraries(eddy PUBLIC openvino::runtime)

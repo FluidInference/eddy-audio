@@ -45,4 +45,4 @@
 - OpenVINO env: use `run_bench_npu.bat` to preload. If needed, set `OpenVINO_DIR` (e.g., `C:\Program Files (x86)\Intel\openvino_2025.0.0\runtime\cmake`).
 - GenAI (Whisper): set `OpenVINOGenAI_DIR` when `EDDY_ENABLE_WHISPER=ON`.
 - Download models: `powershell -ExecutionPolicy Bypass -File scripts\setup_parakeet_models.ps1` (downloads into `%LOCALAPPDATA%\eddy\models\parakeet-v2\files`). Cross‑platform: build/run `hf_fetch_models` with `--target` pointing to your user models dir.
-- Runtime knobs: `EDDY_OV_PERF`, `EDDY_OV_NUM_REQUESTS`, `EDDY_OV_THREADS`, `EDDY_CONTEXT_FRAMES`, `EDDY_BOUNDARY_SEARCH_FRAMES`, `EDDY_DISABLE_HOLDBACK=1`.
+- Runtime knobs: `EDDY_OV_PERF`, `EDDY_OV_NUM_REQUESTS`, `EDDY_OV_THREADS`, `EDDY_CONTEXT_FRAMES`, `EDDY_BOUNDARY_SEARCH_FRAMES`, `EDDY_DISABLE_HOLDBACK=1`, `EDDY_DEDUP_PREV_TOKENS` (default 15).

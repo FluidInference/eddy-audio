@@ -1,6 +1,6 @@
 // Centralized fetch/ensure logic for Parakeet model files.
 
-#include "eddy/models/parakeet/ensure_models.hpp"
+#include "eddy/utils/ensure_models.hpp"
 #include "eddy/core/cache.hpp"
 
 #include <cstdlib>
@@ -24,10 +24,22 @@ static bool file_nonempty(const std::filesystem::path& p) {
 
 static std::filesystem::path try_find_hf_fetch_models() {
 #if defined(_WIN32)
-  char exe_buf[MAX_PATH] = {0};
-  DWORD n = GetModuleFileNameA(nullptr, exe_buf, static_cast<DWORD>(sizeof(exe_buf)));
-  if (n > 0) {
-    std::filesystem::path exe_dir = std::filesystem::path(exe_buf).parent_path();
+  // Use a dynamically sized buffer to avoid MAX_PATH limitations
+  std::wstring wpath;
+  std::vector<wchar_t> buf(256);
+  for (;;) {
+    DWORD n = GetModuleFileNameW(nullptr, buf.data(), static_cast<DWORD>(buf.size()));
+    if (n == 0) break;  // failure
+    if (n < buf.size() - 1) {
+      wpath.assign(buf.data(), n);
+      break;
+    }
+    // Buffer too small; grow and retry
+    if (buf.size() > 1 << 15) break;  // sanity cap ~32k
+    buf.resize(buf.size() * 2);
+  }
+  if (!wpath.empty()) {
+    std::filesystem::path exe_dir = std::filesystem::path(wpath).parent_path();
     std::filesystem::path candidate = exe_dir / "hf_fetch_models.exe";
     if (std::filesystem::exists(candidate)) return candidate;
   }
@@ -89,14 +101,20 @@ bool ensure_models_available(const std::filesystem::path& target_dir,
 #endif
 
   int rc = std::system(cmd.str().c_str());
-  (void)rc;
+  if (rc != 0 && last_error) {
+    std::ostringstream msg;
+    msg << "hf_fetch_models exited with code " << rc;
+    *last_error = msg.str();
+  }
 
   // Re-check
   for (const auto& f : required) {
     if (!file_nonempty(target_dir / f)) {
       if (last_error) {
         std::ostringstream msg;
-        msg << "Missing after fetch attempt: " << f << ". Install models manually or run scripts/setup_parakeet_models.ps1.";
+        if (!last_error->empty()) msg << *last_error << "; ";
+        msg << "Missing after fetch attempt: " << f
+            << ". Install models manually or run scripts/setup_parakeet_models.ps1.";
         *last_error = msg.str();
       }
       return false;
@@ -106,4 +124,3 @@ bool ensure_models_available(const std::filesystem::path& target_dir,
 }
 
 }  // namespace eddy::parakeet
-

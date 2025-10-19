@@ -4,8 +4,8 @@
 #include "eddy/backends/openvino_backend.hpp"
 #include "eddy/core/cache.hpp"
 #include "eddy/models/parakeet/parakeet.hpp"
-#include "eddy/models/parakeet/parakeet_openvino.hpp"
-#include "eddy/models/parakeet/ensure_models.hpp"
+#include "eddy/models/parakeet-v2/parakeet_openvino.hpp"
+#include "eddy/utils/ensure_models.hpp"
 #include "eddy/pipelines/audio_utils.hpp"
 #include "text_normalizer.hpp"
 
@@ -177,7 +177,9 @@ bool download_librispeech_dataset(const fs::path& dataset_parent_dir) {
 
     int ret = std::system(curl_cmd.c_str());
     if (ret != 0) {
-        std::cerr << "ERROR: Download failed. Please check your internet connection.\n";
+        std::cerr << "ERROR: Download failed (exit code " << ret << ").\n";
+        std::cerr << "Command: " << curl_cmd << "\n";
+        std::cerr << "Please check your internet connection and that 'curl' is available on PATH.\n";
         std::cerr << "You can also manually download from:\n";
         std::cerr << "  " << url << "\n";
         std::cerr << "And extract to: " << dataset_parent_dir << "\n";
@@ -199,8 +201,9 @@ bool download_librispeech_dataset(const fs::path& dataset_parent_dir) {
 
     ret = std::system(tar_cmd.c_str());
     if (ret != 0) {
-        std::cerr << "ERROR: Extraction failed.\n";
-        std::cerr << "Please manually extract: " << tar_path << "\n";
+        std::cerr << "ERROR: Extraction failed (exit code " << ret << ").\n";
+        std::cerr << "Command: " << tar_cmd << "\n";
+        std::cerr << "Ensure 'tar' is available on PATH (built-in on Windows 10+), or extract manually: " << tar_path << "\n";
         return false;
     }
 
@@ -288,7 +291,7 @@ fs::path convert_flac_to_wav(const fs::path& flac_path) {
 
     int ret = std::system(cmd.c_str());
     if (ret != 0) {
-        throw std::runtime_error("ffmpeg conversion failed for: " + flac_path.string());
+        throw std::runtime_error(std::string("ffmpeg conversion failed (exit ") + std::to_string(ret) + ") for: " + flac_path.string() + ". Ensure 'ffmpeg' is installed and on PATH.");
     }
 
     return wav_path;
@@ -747,17 +750,9 @@ int main(int argc, char* argv[]) {
         // Comparison
         std::cout << "Expected (FluidAudio v2): 2.2% WER, 141x RTFx\n";
         std::cout << std::setprecision(1);
-        std::cout << "Your eddy performance:    " << (avg_wer * 100) << "% WER, " << overall_rtfx << "x RTFx\n\n";
+        std::cout << "performance:    " << (avg_wer * 100) << "% WER, " << overall_rtfx << "x RTFx\n\n";
 
-        if (avg_wer < 0.05) {
-            std::cout << "[EXCELLENT] Accuracy is excellent!\n";
-        } else if (avg_wer < 0.10) {
-            std::cout << "[ACCEPTABLE] Accuracy is acceptable\n";
-        } else {
-            std::cout << "[POOR] Accuracy needs investigation\n";
-        }
 
-        // Save JSON (optionally filtered by min WER percent)
         std::string output_file = "eddy_benchmark_results_cpp.json";
         if (min_wer_percent >= 0.0) {
             std::vector<BenchmarkResult> filtered;
