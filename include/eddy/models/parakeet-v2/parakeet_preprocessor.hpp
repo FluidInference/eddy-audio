@@ -2,7 +2,7 @@
 
 #include <openvino/openvino.hpp>
 #include <vector>
-#include "eddy/models/parakeet/parakeet.hpp"
+#include "eddy/models/parakeet-v2/parakeet.hpp"
 
 namespace eddy::parakeet {
 

@@ -41,7 +41,7 @@ target_sources(eddy
     src/core/runtime.cpp
     src/core/model.cpp
     src/core/cache.cpp
-    src/pipelines/audio_utils.cpp
+    src/utils/audio_utils.cpp
     src/utils/ensure_models.cpp
     src/utils/tokenizer.cpp
 )

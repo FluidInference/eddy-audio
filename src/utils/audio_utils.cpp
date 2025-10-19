@@ -1,7 +1,7 @@
 // Copyright (C) 2025 Eddy SDK
 // SPDX-License-Identifier: Apache-2.0
 
-#include "eddy/pipelines/audio_utils.hpp"
+#include "eddy/utils/audio_utils.hpp"
 
 #include <stdexcept>
 #include <cstdint>

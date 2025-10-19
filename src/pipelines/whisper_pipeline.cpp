@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "eddy/pipelines/whisper_pipeline.hpp"
-#include "eddy/pipelines/audio_utils.hpp"
+#include "eddy/utils/audio_utils.hpp"
 
 #include <openvino/genai/whisper_pipeline.hpp>
 #include <openvino/openvino.hpp>

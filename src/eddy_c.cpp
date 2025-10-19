@@ -9,10 +9,10 @@
 
 #include "eddy/backends/openvino_backend.hpp"
 #include "eddy/core/cache.hpp"
-#include "eddy/models/parakeet/parakeet.hpp"
+#include "eddy/models/parakeet-v2/parakeet.hpp"
 #include "eddy/models/parakeet-v2/parakeet_openvino.hpp"
 #include "eddy/utils/ensure_models.hpp"
-#include "eddy/pipelines/audio_utils.hpp"
+#include "eddy/utils/audio_utils.hpp"
 
 #include <cstring>
 #include <string>

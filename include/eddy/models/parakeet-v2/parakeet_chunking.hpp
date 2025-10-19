@@ -1,6 +1,6 @@
 #pragma once
 
-#include "eddy/models/parakeet/parakeet.hpp"
+#include "eddy/models/parakeet-v2/parakeet.hpp"
 #include <vector>
 #include <cstddef>
 

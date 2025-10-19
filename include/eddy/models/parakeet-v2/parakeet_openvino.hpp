@@ -5,7 +5,7 @@
 #include <string>
 
 #include "eddy/backends/openvino_backend.hpp"
-#include "eddy/models/parakeet/parakeet.hpp"
+#include "eddy/models/parakeet-v2/parakeet.hpp"
 
 #include <openvino/openvino.hpp>
 
