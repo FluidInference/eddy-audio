@@ -10,6 +10,7 @@ eddy is a C++ inference library designed for native runtimes and multi-vendor ed
 - `include/` – public headers for the runtime, backend abstractions, and model bridges.
 - `src/` – backend/runtime implementations and model-specific glue code.
 - `docs/` – design notes and usage guides.
+- `benchmarks/` – Python scripts for LibriSpeech ASR benchmarking (see [benchmarks/README.md](benchmarks/README.md)).
 
 ## Building
 ```
