@@ -603,7 +603,9 @@ int main(int argc, char* argv[]) {
                               << " - Or legacy:   " << (eddy::get_app_data_dir() / "cache" / "models" / "parakeet-v2" / "files").string() << "\n"
 #endif
                               << " - Or project:  models/\n\n"
-                              << "Run: powershell -ExecutionPolicy Bypass -File scripts\\setup_parakeet_models.ps1\n";
+                              << "Download models:\n"
+                              << " - Run: hf_fetch_models.exe\n"
+                              << " - Or visit: https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v2-ov\n";
                     return 2;
                 }
             }

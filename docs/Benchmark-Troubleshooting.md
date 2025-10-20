@@ -19,7 +19,7 @@ This doc captures the practical gotchas we hit while running the C++ benchmark a
 
 - Build the C API shim and ensure models are fetched:
   - `cmake --build build --config Release --target eddy eddy_c`
-  - `powershell -ExecutionPolicy Bypass -File scripts\setup_parakeet_models.ps1`
+  - Models auto-download on first run (or run `hf_fetch_models.exe` manually)
 - Install Python deps: `pip install datasets jiwer numpy`
 - Run:
   - `python scripts\bench_parakeet_ctypes.py --lib build\Release\eddy_c.dll --device CPU --max 25`
@@ -48,9 +48,9 @@ This doc captures the practical gotchas we hit while running the C++ benchmark a
    - Delete `%LOCALAPPDATA%\eddy\models\parakeet-v2\`
 2) Configure + build:
    - `cmake -S . -B build -G "Visual Studio 17 2022" -A x64`
-   - `cmake --build build --config Release --target eddy parakeet_cli benchmark_librispeech`
-3) Fetch models + rebuild (helper):
-   - `powershell -ExecutionPolicy Bypass -File scripts\setup_parakeet_models.ps1`
+   - `cmake --build build --config Release --target eddy parakeet_cli benchmark_librispeech hf_fetch_models`
+3) Fetch models:
+   - Models auto-download on first run, or run `hf_fetch_models.exe` manually
 
 ### Clear Compiled Cache (Keep Models)
 

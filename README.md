@@ -25,16 +25,14 @@ Optional Whisper (OpenVINO GenAI) support is disabled by default. Enable with:
 cmake -S . -B build -DEDDY_ENABLE_OPENVINO=ON -DEDDY_ENABLE_WHISPER=ON -DOpenVINOGenAI_DIR="<path-to-genai-cmake>"
 ```
 
-## Fetch Models (no Python)
-- Windows PowerShell (recommended):
-```
-powershell -ExecutionPolicy Bypass -File scripts\setup_parakeet_models.ps1
-```
-- Manual: build and run the C++ fetcher
-```
-cmake --build build --config Release --target hf_fetch_models
-build/examples/cpp/Release/hf_fetch_models.exe --repo alexwengg/parakeet-tdt-0.6b-v2-ov --target "%LOCALAPPDATA%\eddy\cache\models\parakeet-v2\files"
-```
+## Models (auto-download on first run)
+Models will automatically download from `FluidInference/parakeet-tdt-0.6b-v2-ov` on first use.
+
+Cached at: `%LOCALAPPDATA%\eddy\models\parakeet-v2\files\`
+
+Manual download: Run `hf_fetch_models.exe` or visit https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v2-ov
+
+To disable auto-download: set `EDDY_DISABLE_AUTO_FETCH=1`
 
 ## Parakeet OpenVINO Prototype
 Refer to `docs/parakeet_openvino.md` for instructions on pulling the exported model from Hugging Face and running a smoke test through the new `OpenVINOParakeet` wrapper.

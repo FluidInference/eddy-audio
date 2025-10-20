@@ -12,4 +12,7 @@ target_link_libraries(benchmark_librispeech PRIVATE eddy)
 # Ensure nlohmann/json single-header is visible to example headers
 target_include_directories(benchmark_librispeech PRIVATE ${CMAKE_SOURCE_DIR}/third_party)
 
-install(TARGETS parakeet_cli benchmark_librispeech DESTINATION bin)
+add_executable(hf_fetch_models hf_fetch_models.cpp)
+# No dependencies needed - standalone tool using curl via system()
+
+install(TARGETS parakeet_cli benchmark_librispeech hf_fetch_models DESTINATION bin)

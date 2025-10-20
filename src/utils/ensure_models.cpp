@@ -114,7 +114,8 @@ bool ensure_models_available(const std::filesystem::path& target_dir,
         std::ostringstream msg;
         if (!last_error->empty()) msg << *last_error << "; ";
         msg << "Missing after fetch attempt: " << f
-            << ". Install models manually or run scripts/setup_parakeet_models.ps1.";
+            << ". Run 'hf_fetch_models.exe' manually or download from "
+            << "https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v2-ov";
         *last_error = msg.str();
       }
       return false;

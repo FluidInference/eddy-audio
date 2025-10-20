@@ -8,7 +8,7 @@
 
 ## Build, Test, and Development Commands
 - Configure: `cmake -B build -S . -DCMAKE_BUILD_TYPE=Release -DEDDY_ENABLE_OPENVINO=ON`
-- Build tools: `cmake --build build --config Release --target eddy parakeet_cli benchmark_librispeech`
+- Build tools: `cmake --build build --config Release --target eddy parakeet_cli benchmark_librispeech hf_fetch_models`
 - Run CLI (NPU): `build\examples\cpp\Release\parakeet_cli.exe "<path-to-wav>" --device NPU`
 - Benchmark (NPU): `build\examples\cpp\Release\benchmark_librispeech.exe --max-files 50 --device NPU`
 - Tests (optional): configure with `-DBUILD_TESTING=ON`, then `ctest --test-dir build`
@@ -39,10 +39,10 @@
     Get-ChildItem $b -Directory | ? { $_.Name -ne 'files' } | Remove-Item -Recurse -Force
   }
   ```
-- Rebuild: `cmake --build build --config Release --target eddy parakeet_cli benchmark_librispeech`. First run after a cache clear will recompile models and may take minutes.
+- Rebuild: `cmake --build build --config Release --target eddy parakeet_cli benchmark_librispeech hf_fetch_models`. First run after a cache clear will recompile models and may take minutes.
 
 ## Configuration & Models
 - OpenVINO env: use `run_bench_npu.bat` to preload. If needed, set `OpenVINO_DIR` (e.g., `C:\Program Files (x86)\Intel\openvino_2025.0.0\runtime\cmake`).
 - GenAI (Whisper): set `OpenVINOGenAI_DIR` when `EDDY_ENABLE_WHISPER=ON`.
-- Download models: `powershell -ExecutionPolicy Bypass -File scripts\setup_parakeet_models.ps1` (downloads into `%LOCALAPPDATA%\eddy\models\parakeet-v2\files`). Cross‑platform: build/run `hf_fetch_models` with `--target` pointing to your user models dir.
+- Download models: Models auto-download on first run via `hf_fetch_models`. Manual download: run `hf_fetch_models.exe` or visit https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v2-ov (downloads into `%LOCALAPPDATA%\eddy\models\parakeet-v2\files`).
 - Runtime knobs: `EDDY_OV_PERF`, `EDDY_OV_NUM_REQUESTS`, `EDDY_OV_THREADS`, `EDDY_CONTEXT_FRAMES`, `EDDY_BOUNDARY_SEARCH_FRAMES`, `EDDY_DISABLE_HOLDBACK=1`, `EDDY_DEDUP_PREV_TOKENS` (default 15).
