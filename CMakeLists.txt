@@ -14,17 +14,18 @@ if(MSVC)
   string(APPEND CMAKE_CXX_FLAGS_RELEASE " /O2 /Oi /Ot /Ob3 /fp:fast")
 endif()
 
-option(EDDY_ENABLE_OPENVINO "Enable OpenVINO backend" ON)
 option(EDDY_ENABLE_WHISPER "Enable Whisper (OpenVINO GenAI) support" OFF)
 option(EDDY_BUILD_EXAMPLES "Build examples" ON)
 option(EDDY_BUILD_CSHARP "Build C# bindings" OFF)
 
-if(EDDY_ENABLE_OPENVINO)
-  find_package(OpenVINO REQUIRED COMPONENTS Runtime)
-  # Whisper support is opt-in via EDDY_ENABLE_WHISPER
-  if(EDDY_ENABLE_WHISPER)
-    find_package(OpenVINOGenAI REQUIRED)
-  endif()
+# Core dependencies
+find_package(OpenVINO REQUIRED COMPONENTS Runtime)
+find_package(SndFile REQUIRED)
+find_package(SampleRate REQUIRED)
+
+# Whisper support is optional and requires OpenVINO GenAI
+if(EDDY_ENABLE_WHISPER)
+  find_package(OpenVINOGenAI REQUIRED)
 endif()
 
 add_library(eddy STATIC)
@@ -38,39 +39,43 @@ target_include_directories(eddy
 
 target_sources(eddy
   PRIVATE
+    # Core utilities
     src/core/runtime.cpp
     src/core/model.cpp
-    src/core/cache.cpp
+    src/core/app_dir.cpp
     src/utils/audio_utils.cpp
     src/utils/ensure_models.cpp
     src/utils/tokenizer.cpp
-)
 
-# Link Windows shell library for cache directory access
-if(WIN32)
-  target_link_libraries(eddy PRIVATE Shell32)
-endif()
-
-if(EDDY_ENABLE_OPENVINO)
-  # OpenVINO-dependent sources only when enabled
-  target_sources(eddy PRIVATE
+    # OpenVINO backend
     src/backends/openvino_backend.cpp
+
+    # Parakeet TDT v2 implementation
     src/models/parakeet-v2/parakeet_openvino.cpp
     src/models/parakeet-v2/parakeet_preprocessor.cpp
     src/models/parakeet-v2/parakeet_encoder.cpp
     src/models/parakeet-v2/parakeet_decoder.cpp
     src/models/parakeet-v2/parakeet_chunking.cpp
-  )
-  target_compile_definitions(eddy PUBLIC EDDY_WITH_OPENVINO=1)
-  target_link_libraries(eddy PUBLIC openvino::runtime)
+)
 
-  # Link GenAI only if found (for Whisper support)
-  if(EDDY_ENABLE_WHISPER)
-    # Whisper pipeline: enabled explicitly via flag and requires GenAI
-    target_sources(eddy PRIVATE src/pipelines/whisper_pipeline.cpp)
-    target_compile_definitions(eddy PUBLIC EDDY_WITH_OPENVINO_GENAI=1)
-    target_link_libraries(eddy PUBLIC openvino::genai)
-  endif()
+# Link dependencies
+target_compile_definitions(eddy PUBLIC EDDY_WITH_OPENVINO=1)
+target_link_libraries(eddy
+  PUBLIC
+    openvino::runtime
+    SndFile::sndfile
+    SampleRate::samplerate
+)
+
+if(WIN32)
+  target_link_libraries(eddy PRIVATE Shell32)
+endif()
+
+# Optional Whisper support
+if(EDDY_ENABLE_WHISPER)
+  target_sources(eddy PRIVATE src/pipelines/whisper_pipeline.cpp)
+  target_compile_definitions(eddy PUBLIC EDDY_WITH_OPENVINO_GENAI=1)
+  target_link_libraries(eddy PUBLIC openvino::genai)
 endif()
 
 install(TARGETS eddy EXPORT eddyTargets ARCHIVE DESTINATION lib LIBRARY DESTINATION lib RUNTIME DESTINATION bin)
@@ -82,7 +87,6 @@ write_basic_package_version_file(${CMAKE_CURRENT_BINARY_DIR}/eddyConfigVersion.c
   VERSION 0.1.0
   COMPATIBILITY AnyNewerVersion
 )
-set(EDDY_ENABLE_OPENVINO_CONFIG ${EDDY_ENABLE_OPENVINO})
 configure_file(cmake/eddyConfig.cmake.in ${CMAKE_CURRENT_BINARY_DIR}/eddyConfig.cmake @ONLY)
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/eddyConfig.cmake ${CMAKE_CURRENT_BINARY_DIR}/eddyConfigVersion.cmake DESTINATION lib/cmake/eddy)
 

@@ -26,9 +26,6 @@ struct EncoderActivations {
   size_t valid_frames = 0;
 };
 
-// Select encoder input/output ports by name and shape
-EncoderPorts select_encoder_ports(const ov::CompiledModel& model);
-
 // Run the encoder on mel-spectrogram features
 EncoderActivations run_encoder(ParakeetImpl& impl, const MelFeatures& mel);
 

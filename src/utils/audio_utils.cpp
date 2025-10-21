@@ -5,9 +5,10 @@
 
 #include <stdexcept>
 #include <cstdint>
+#include <memory>
 
-#define DR_WAV_IMPLEMENTATION
-#include "dr_wav.h"
+#include <sndfile.h>
+#include <samplerate.h>
 
 namespace eddy {
 namespace audio {
@@ -15,39 +16,72 @@ namespace audio {
 constexpr int REQUIRED_SAMPLE_RATE = 16000;
 
 std::vector<float> read_wav(const std::string& filename) {
-    drwav wav;
-    if (!drwav_init_file(&wav, filename.c_str(), nullptr)) {
-        throw std::runtime_error("Failed to open WAV file: " + filename);
+    // Open audio file with libsndfile
+    SF_INFO info;
+    info.format = 0;  // Let libsndfile detect format
+    SNDFILE* file = sf_open(filename.c_str(), SFM_READ, &info);
+
+    if (!file) {
+        throw std::runtime_error("Failed to open audio file: " + filename + " (" + sf_strerror(nullptr) + ")");
     }
 
-    if (wav.channels != 1 && wav.channels != 2) {
-        drwav_uninit(&wav);
-        throw std::runtime_error("WAV file must be mono or stereo, got " + std::to_string(wav.channels) + " channels");
+    // Custom deleter for RAII
+    auto file_deleter = [](SNDFILE* f) { if (f) sf_close(f); };
+    std::unique_ptr<SNDFILE, decltype(file_deleter)> file_guard(file, file_deleter);
+
+    // Validate channel count
+    if (info.channels != 1 && info.channels != 2) {
+        throw std::runtime_error("Audio file must be mono or stereo, got " +
+                                 std::to_string(info.channels) + " channels");
     }
 
-    if (wav.sampleRate != REQUIRED_SAMPLE_RATE) {
-        drwav_uninit(&wav);
-        throw std::runtime_error("WAV file must be 16kHz, got " + std::to_string(wav.sampleRate) + " Hz");
+    // Read all audio data as float32 (libsndfile handles conversion automatically)
+    std::vector<float> data(info.frames * info.channels);
+    sf_count_t frames_read = sf_readf_float(file, data.data(), info.frames);
+
+    if (frames_read != info.frames) {
+        throw std::runtime_error("Failed to read complete audio file");
     }
 
-  const uint64_t n = wav.totalPCMFrameCount;
+    // Mix stereo to mono if needed
+    if (info.channels == 2) {
+        std::vector<float> mono(info.frames);
+        for (sf_count_t i = 0; i < info.frames; ++i) {
+            mono[i] = 0.5f * (data[2 * i] + data[2 * i + 1]);
+        }
+        data = std::move(mono);
+    }
 
-  // Read as float32 directly to avoid intermediate int16 copy
-  std::vector<float> buf(n * wav.channels);
-  drwav_read_pcm_frames_f32(&wav, n, buf.data());
-  drwav_uninit(&wav);
+    // Resample to 16kHz if needed
+    if (info.samplerate != REQUIRED_SAMPLE_RATE) {
+        const double ratio = static_cast<double>(REQUIRED_SAMPLE_RATE) / info.samplerate;
+        const size_t output_frames = static_cast<size_t>(info.frames * ratio);
 
-  // Convert to mono float32 (average if stereo)
-  if (wav.channels == 1) return buf;
+        std::vector<float> resampled(output_frames);
 
-  const size_t frames = static_cast<size_t>(n);
-  std::vector<float> mono(frames);
-  for (size_t i = 0; i < frames; ++i) {
-    mono[i] = 0.5f * (buf[2 * i] + buf[2 * i + 1]);
-  }
-  return mono;
+        SRC_DATA src_data;
+        src_data.data_in = data.data();
+        src_data.data_out = resampled.data();
+        src_data.input_frames = info.frames;
+        src_data.output_frames = output_frames;
+        src_data.src_ratio = ratio;
+
+        int error = src_simple(&src_data, SRC_SINC_BEST_QUALITY, 1);
+        if (error) {
+            throw std::runtime_error("Failed to resample audio: " +
+                                     std::string(src_strerror(error)));
+        }
+
+        // Resize to actual output (may be slightly different due to rounding)
+        resampled.resize(src_data.output_frames_gen);
+        return resampled;
+    }
+
+    return data;
 }
 
+// Convert in-memory PCM16 buffer to float32 mono
+// Note: For file I/O, use read_wav() which leverages libsndfile
 std::vector<float> pcm16_to_float32(const int16_t* data, size_t size, int channels) {
     if (channels != 1 && channels != 2) {
         throw std::runtime_error("Only mono or stereo audio supported");

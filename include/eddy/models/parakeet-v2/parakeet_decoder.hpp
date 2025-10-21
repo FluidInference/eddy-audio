@@ -49,8 +49,8 @@ void finalize_chunk_decoding(ParakeetImpl& impl,
                              DecoderState& state,
                              size_t max_tokens);
 
-// Run greedy TDT decoder on encoder activations
-DecoderResult run_greedy_decoder(ParakeetImpl& impl,
+// Run TDT decoder on encoder activations
+DecoderResult run_decoder(ParakeetImpl& impl,
                                 const EncoderActivations& encoder,
                                 const SegmentOptions& options,
                                 DecoderState& state,

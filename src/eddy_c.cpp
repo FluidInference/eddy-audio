@@ -8,7 +8,7 @@
 #endif
 
 #include "eddy/backends/openvino_backend.hpp"
-#include "eddy/core/cache.hpp"
+#include "eddy/core/app_dir.hpp"
 #include "eddy/models/parakeet-v2/parakeet.hpp"
 #include "eddy/models/parakeet-v2/parakeet_openvino.hpp"
 #include "eddy/utils/ensure_models.hpp"
@@ -96,6 +96,7 @@ EddyWhisperPipeline eddy_whisper_create(
         }
         return nullptr;
     }
+#endif
 }
 
 void eddy_whisper_destroy(EddyWhisperPipeline pipeline) {
@@ -159,8 +160,8 @@ EddyError eddy_whisper_transcribe_file(
         }
         return EDDY_ERROR_UNKNOWN;
     }
-}
 #endif
+}
 
 EddyError eddy_whisper_transcribe_buffer(
     EddyWhisperPipeline pipeline,
@@ -216,8 +217,8 @@ EddyError eddy_whisper_transcribe_buffer(
         }
         return EDDY_ERROR_UNKNOWN;
     }
-}
 #endif
+}
 
 void eddy_whisper_set_language(
     EddyWhisperPipeline pipeline,

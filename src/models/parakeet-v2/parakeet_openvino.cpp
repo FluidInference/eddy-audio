@@ -88,6 +88,161 @@ size_t required_length(const ov::Output<const ov::Node>& port) {
   return static_shape.empty() ? 0U : static_shape.back();
 }
 
+struct ChunkPipelineResult {
+  std::vector<int> tokens;
+  std::vector<TokenTiming> timings;
+  double encoder_ms;
+  double decoder_ms;
+  double joint_ms;
+};
+
+// Helper function to run encoder + decoder pipeline on a chunk
+// Note: decoder_state is passed by reference and will be updated with LSTM state
+// for continuity across chunks
+ChunkPipelineResult run_chunk_pipeline(
+    OpenVINOParakeet::Impl& impl,
+    const MelFeatures& mel,
+    const SegmentOptions& options,
+    DecoderState& decoder_state,
+    bool is_last_chunk) {
+
+  auto t0 = std::chrono::steady_clock::now();
+  const auto encoder = run_encoder(impl, mel);
+  auto t1 = std::chrono::steady_clock::now();
+  const double enc_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+  t0 = std::chrono::steady_clock::now();
+  auto decoder_result = run_decoder(impl, encoder, options, decoder_state, is_last_chunk);
+  t1 = std::chrono::steady_clock::now();
+
+  ChunkPipelineResult result;
+  result.tokens = std::move(decoder_result.tokens);
+  result.timings = std::move(decoder_result.timings);
+  result.encoder_ms = enc_ms;
+  result.decoder_ms = decoder_result.t_decoder_ms;
+  result.joint_ms = decoder_result.t_joint_ms;
+
+  return result;
+}
+
+// Extract a chunk of mel features from the full mel spectrogram
+MelFeatures extract_mel_chunk(const MelFeatures& full_mel, size_t offset, size_t chunk_size) {
+  MelFeatures chunk;
+  chunk.frames = chunk_size;
+  chunk.data.resize(128 * chunk_size);
+
+  // Copy mel data for this chunk (mel is stored as [mel_bins][time])
+  for (size_t bin = 0; bin < 128; ++bin) {
+    const float* src = full_mel.data.data() + bin * full_mel.frames + offset;
+    float* dst = chunk.data.data() + bin * chunk_size;
+    std::copy(src, src + chunk_size, dst);
+  }
+
+  return chunk;
+}
+
+// Process the first chunk - keep all tokens without deduplication
+void process_first_chunk(
+    OpenVINOParakeet::Impl& impl,
+    std::vector<int>& chunk_tokens,
+    std::vector<TokenTiming>& chunk_timings,
+    size_t offset,
+    std::vector<int>& token_ids,
+    std::vector<TokenTiming>& all_timings,
+    size_t& last_emitted_global_frame,
+    bool& have_last_emitted_frame,
+    InferenceResult::ChunkInfo& ci) {
+
+  token_ids = std::move(chunk_tokens);
+
+  // Convert timings to global frame indices
+  for (auto& t : chunk_timings) {
+    t.frame_index += offset;
+  }
+  all_timings = std::move(chunk_timings);
+
+  if (!all_timings.empty()) {
+    last_emitted_global_frame = all_timings.back().frame_index;
+    have_last_emitted_frame = true;
+  }
+
+  ci.tokens_appended = token_ids.size();
+  ci.skip_prefix = 0;
+  ci.holdback = 0;
+  ci.appended_text = impl.tokenizer.decode(token_ids);
+}
+
+// Process subsequent chunks with deduplication
+void process_subsequent_chunk(
+    OpenVINOParakeet::Impl& impl,
+    std::vector<int>& chunk_tokens,
+    std::vector<TokenTiming>& chunk_timings,
+    size_t offset,
+    size_t chunk_size,
+    size_t overlap_frames,
+    bool is_last_chunk,
+    std::vector<int>& token_ids,
+    std::vector<TokenTiming>& all_timings,
+    size_t& last_emitted_global_frame,
+    bool& have_last_emitted_frame,
+    InferenceResult::ChunkInfo& ci) {
+
+  auto dedup_result = deduplicate_chunk(
+      impl,
+      token_ids,
+      chunk_tokens,
+      chunk_timings,
+      offset,
+      chunk_size,
+      overlap_frames,
+      is_last_chunk,
+      last_emitted_global_frame,
+      have_last_emitted_frame
+  );
+
+  const size_t skip_count = dedup_result.skip_prefix;
+  const size_t emit_end = dedup_result.emit_end;
+
+  // Append tokens and timings, skipping duplicates and any filtered prefix/suffix
+  if (skip_count >= emit_end) {
+    if (std::getenv("EDDY_DEBUG")) {
+      std::cerr << "[INFO] Entire chunk consists of overlapped region; appending nothing\n";
+    }
+  } else {
+    const size_t append_count = emit_end - skip_count;
+
+    if (token_ids.capacity() < token_ids.size() + append_count) {
+      token_ids.reserve(token_ids.size() + append_count + 64);
+    }
+    token_ids.insert(token_ids.end(), chunk_tokens.begin() + skip_count, chunk_tokens.begin() + emit_end);
+
+    if (all_timings.capacity() < all_timings.size() + append_count) {
+      all_timings.reserve(all_timings.size() + append_count + 64);
+    }
+    all_timings.insert(all_timings.end(), chunk_timings.begin() + skip_count, chunk_timings.begin() + emit_end);
+
+    if (!all_timings.empty()) {
+      last_emitted_global_frame = all_timings.back().frame_index;
+      have_last_emitted_frame = true;
+    }
+  }
+
+  // Record dedup/holdback stats
+  const size_t total_curr = chunk_tokens.size();
+  const size_t appended = (skip_count >= emit_end) ? 0 : (emit_end - skip_count);
+  const size_t held_back = (emit_end <= total_curr) ? (total_curr - emit_end) : 0;
+
+  ci.tokens_appended = appended;
+  ci.skip_prefix = skip_count;
+  ci.holdback = held_back;
+
+  if (appended > 0) {
+    ci.appended_text = impl.tokenizer.decode_span(chunk_tokens.data() + skip_count, appended);
+  } else {
+    ci.appended_text.clear();
+  }
+}
+
 
 }  // namespace
 
@@ -130,56 +285,33 @@ std::string OpenVINOParakeet::decode_tokens(const std::vector<int>& token_ids) {
 
 void OpenVINOParakeet::ensure_compiled_model() {
   std::call_once(impl_->compile_once, [this]() {
-    // Allow environment overrides for critical runtime knobs without recompiling callers
-    // EDDY_BLANK_ID: integer
-    // EDDY_DURATION_BINS: comma-separated integers, e.g. "0,1,2,3,4,6,8,12,16,24"
-    if (const char* env_blank = std::getenv("EDDY_BLANK_ID")) {
-      try {
-        int v = std::stoi(env_blank);
-        if (v >= 0) {
-          impl_->runtime_cfg.blank_token_id = v;
-          std::cerr << "[CFG] Overriding blank_token_id from env: " << v << "\n";
-        }
-      } catch (...) {
-        std::cerr << "[WARN] Failed to parse EDDY_BLANK_ID='" << env_blank << "'\n";
-      }
-    }
-    if (const char* env_bins = std::getenv("EDDY_DURATION_BINS")) {
-      std::vector<int> bins;
-      std::string s(env_bins);
-      size_t pos = 0;
-      while (pos < s.size()) {
-        size_t comma = s.find(',', pos);
-        std::string token = s.substr(pos, comma == std::string::npos ? std::string::npos : (comma - pos));
-        try {
-          if (!token.empty()) bins.push_back(std::stoi(token));
-        } catch (...) {}
-        if (comma == std::string::npos) break;
-        pos = comma + 1;
-      }
-      if (!bins.empty()) {
-        impl_->runtime_cfg.duration_bins = std::move(bins);
-        std::cerr << "[CFG] Overriding duration_bins from env (" << impl_->runtime_cfg.duration_bins.size() << " values)\n";
-      } else {
-        std::cerr << "[WARN] EDDY_DURATION_BINS provided but parsed empty\n";
-      }
-    }
+    // ========================================
+    // Device configuration
+    // ========================================
     auto& core = impl_->backend->core();
     const std::string device = impl_->runtime_cfg.device.empty() ? "AUTO" : impl_->runtime_cfg.device;
     const bool target_npu = (device == "NPU");
 
+    // ========================================
+    // Compile preprocessor (mel spectrogram)
+    // ========================================
     // Melspectogram has to run on CPU
     std::string preproc_device = std::string("CPU");
     if (const char* env_pre = std::getenv("EDDY_PREPROC_DEVICE")) {
       if (*env_pre) preproc_device = env_pre;
     }
+
     impl_->preproc_model = compile_component(core, impl_->model_paths.preprocessor, preproc_device);
     impl_->preproc_request = impl_->preproc_model.create_infer_request();
 
+    // ========================================
+    // Compile encoder, decoder, and joint models
+    // ========================================
     auto compile_with_fallback = [&](const ModelFile& file, const char* name) -> ov::CompiledModel {
       if (!target_npu) {
         return compile_component(core, file, device);
       }
+
       try {
         return compile_component(core, file, "NPU");
       } catch (const std::exception& e) {
@@ -189,26 +321,36 @@ void OpenVINOParakeet::ensure_compiled_model() {
       }
     };
 
+    // Encoder
     impl_->encoder_model = compile_with_fallback(impl_->model_paths.encoder, "encoder");
     impl_->encoder_request = impl_->encoder_model.create_infer_request();
 
-    // Decoder: try NPU with CPU fallback like others
+    // Decoder
     impl_->decoder_model = compile_with_fallback(impl_->model_paths.decoder, "decoder");
     impl_->decoder_request = impl_->decoder_model.create_infer_request();
 
+    // Joint
     impl_->joint_model = compile_with_fallback(impl_->model_paths.joint, "joint");
     impl_->joint_request = impl_->joint_model.create_infer_request();
 
+    // ========================================
+    // Load tokenizer
+    // ========================================
     impl_->tokenizer.load(impl_->model_paths.tokenizer_json, impl_->runtime_cfg.blank_token_id);
 
-    // Load port names from metadata JSON if present
+    // ========================================
+    // Load metadata (optional port name overrides)
+    // ========================================
     try {
       const std::filesystem::path enc_path = impl_->model_paths.encoder.path;
       const std::filesystem::path model_dir = std::filesystem::path(enc_path).parent_path();
       const std::filesystem::path meta_path = model_dir / "parakeet_metadata.json";
+
       if (std::filesystem::exists(meta_path)) {
         std::ifstream meta_stream(meta_path);
-        nlohmann::json meta_json; meta_stream >> meta_json;
+        nlohmann::json meta_json;
+        meta_stream >> meta_json;
+
         if (meta_json.contains("encoder")) {
           const auto& enc = meta_json["encoder"];
           if (enc.contains("mel_input")) impl_->enc_mel_name = enc["mel_input"].get<std::string>();
@@ -221,17 +363,21 @@ void OpenVINOParakeet::ensure_compiled_model() {
       // Ignore metadata errors and continue with defaults
     }
 
-    // Resolve encoder ports by explicit names only (no shape fallbacks)
+    // ========================================
+    // Resolve encoder ports by name
+    // ========================================
     try {
       impl_->encoder_ports.mel_in = impl_->encoder_model.input(impl_->enc_mel_name);
     } catch (...) {
       throw std::runtime_error(std::string("Missing encoder mel input port: ") + impl_->enc_mel_name);
     }
+
     try {
       impl_->encoder_ports.len_in = impl_->encoder_model.input(impl_->enc_len_name);
     } catch (...) {
       throw std::runtime_error(std::string("Missing encoder length input port: ") + impl_->enc_len_name);
     }
+
     try {
       impl_->encoder_ports.enc_out = impl_->encoder_model.output(impl_->enc_out_name);
     } catch (...) {
@@ -240,25 +386,35 @@ void OpenVINOParakeet::ensure_compiled_model() {
 
     impl_->encoder_expected_frames = required_length(impl_->encoder_ports.mel_in.value());
 
-    // Determine encoder output indices by name
+    // ========================================
+    // Determine encoder output indices
+    // ========================================
     const auto outs = impl_->encoder_model.outputs();
     bool found_output = false;
     bool found_len = false;
+
     for (size_t i = 0; i < outs.size(); ++i) {
       const auto& p = outs[i];
+
+      // Check for main output port
       try {
-        // Compare by trying to resolve name to output and then compare pointers
         const auto named_out = impl_->encoder_model.output(impl_->enc_out_name);
         if (p == named_out) {
           impl_->encoder_output_index = i;
+
           const auto shape = p.get_shape();
           if (shape.size() >= 2 && shape[1] == 0) {
             throw std::runtime_error("Encoder hidden size is zero");
           }
-          if (shape.size() >= 2) impl_->encoder_hidden_size = shape[1];
+          if (shape.size() >= 2) {
+            impl_->encoder_hidden_size = shape[1];
+          }
+
           found_output = true;
         }
       } catch (...) {}
+
+      // Check for length output port
       if (!found_len) {
         try {
           const auto named_len = impl_->encoder_model.output(impl_->enc_len_out_name);
@@ -269,6 +425,7 @@ void OpenVINOParakeet::ensure_compiled_model() {
         } catch (...) {}
       }
     }
+
     if (!found_output) {
       throw std::runtime_error(std::string("Failed to locate encoder output: ") + impl_->enc_out_name);
     }
@@ -276,22 +433,30 @@ void OpenVINOParakeet::ensure_compiled_model() {
       throw std::runtime_error(std::string("Failed to locate encoder length output: ") + impl_->enc_len_out_name);
     }
 
+    // ========================================
+    // Extract decoder hidden size
+    // ========================================
     const auto decoder_state_shape = impl_->decoder_model.input("h_in").get_shape();
     if (decoder_state_shape.size() != 3) {
       throw std::runtime_error("Unexpected decoder hidden state shape");
     }
     impl_->decoder_hidden_size = decoder_state_shape[2];
 
+    // ========================================
+    // Extract joint output size and validate
+    // ========================================
     const auto joint_shape = impl_->joint_model.output("logits").get_shape();
     if (joint_shape.empty()) {
       throw std::runtime_error("Joint model logits tensor has no dimensions");
     }
     impl_->joint_output_size = joint_shape.back();
 
+    // Validate joint output size matches vocab + duration bins
     // Use blank_id + 1 as the effective vocab size for validation
     // (vocab JSON may have extra entries beyond blank that aren't used)
     const auto effective_vocab_size = static_cast<size_t>(impl_->runtime_cfg.blank_token_id) + 1;
     const auto total_heads = effective_vocab_size + impl_->runtime_cfg.duration_bins.size();
+
     if (total_heads > impl_->joint_output_size) {
       throw std::runtime_error("Joint model output smaller than token+duration heads");
     }
@@ -327,23 +492,17 @@ InferenceResult OpenVINOParakeet::infer(const AudioSegment& segment, const Segme
     const size_t max_frames = impl_->encoder_expected_frames;
 
     if (mel.frames <= max_frames) {
-      // Short audio - process normally
-      DecoderState state;  // Fresh state for single-chunk audio
-      t0 = std::chrono::steady_clock::now();
-      const auto encoder = run_encoder(*impl_, mel);
-      t1 = std::chrono::steady_clock::now();
-      const double enc_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-      t_encoder_ms += enc_ms;
-      t0 = std::chrono::steady_clock::now();
-  auto result = run_greedy_decoder(*impl_, encoder, options, state, /*is_last_chunk=*/true);
-      t1 = std::chrono::steady_clock::now();
-      t_decoder_ms += result.t_decoder_ms;
-      t_joint_ms += result.t_joint_ms;
+      // Short audio - process in single chunk
+      DecoderState state;
+      auto result = run_chunk_pipeline(*impl_, mel, options, state, /*is_last_chunk=*/true);
+
+      t_encoder_ms += result.encoder_ms;
+      t_decoder_ms += result.decoder_ms;
+      t_joint_ms += result.joint_ms;
       token_ids = std::move(result.tokens);
       all_timings = std::move(result.timings);
-      // Chunk metadata: single chunk of full valid frames
+
       chunk_sizes_frames.push_back(mel.frames);
-      // Single chunk: we omit per-chunk log to keep JSON compact (only include when >1)
     } else {
       // Long audio - process in overlapping chunks
       // Use overlap to avoid losing audio at boundaries
@@ -364,128 +523,46 @@ InferenceResult OpenVINOParakeet::infer(const AudioSegment& segment, const Segme
       bool have_last_emitted_frame = false;
 
       while (offset < mel.frames) {
-        // Extract chunk with overlap
         const size_t chunk_size = std::min(max_frames, mel.frames - offset);
         const bool is_last_chunk = (offset + chunk_size >= mel.frames);
-        // Track size for result metadata
         chunk_sizes_frames.push_back(chunk_size);
 
-        MelFeatures chunk;
-        chunk.frames = chunk_size;
-        chunk.data.resize(128 * chunk_size);
+        // Extract mel chunk
+        MelFeatures chunk = extract_mel_chunk(mel, offset, chunk_size);
 
-        // Copy mel data for this chunk (mel is stored as [mel_bins][time])
-        for (size_t bin = 0; bin < 128; ++bin) {
-          const float* src = mel.data.data() + bin * mel.frames + offset;
-          float* dst = chunk.data.data() + bin * chunk_size;
-          std::copy(src, src + chunk_size, dst);
-        }
+        // Run pipeline on chunk
+        auto pipeline_result = run_chunk_pipeline(*impl_, chunk, options, decoder_state, is_last_chunk);
+        t_encoder_ms += pipeline_result.encoder_ms;
+        t_decoder_ms += pipeline_result.decoder_ms;
+        t_joint_ms += pipeline_result.joint_ms;
 
-        t0 = std::chrono::steady_clock::now();
-        const auto encoder = run_encoder(*impl_, chunk);
-        t1 = std::chrono::steady_clock::now();
-        const double enc_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-        t_encoder_ms += enc_ms;
-        // Pass persistent decoder_state - it will be updated with final state after decoding
-        t0 = std::chrono::steady_clock::now();
-        auto decoder_result = run_greedy_decoder(*impl_, encoder, options, decoder_state, is_last_chunk);
-        t1 = std::chrono::steady_clock::now();
-        t_decoder_ms += decoder_result.t_decoder_ms;
-        t_joint_ms += decoder_result.t_joint_ms;
-        auto& chunk_tokens = decoder_result.tokens;
-        auto& chunk_timings = decoder_result.timings;
-
+        // Prepare chunk info
         InferenceResult::ChunkInfo ci;
         ci.index = chunk_idx;
         ci.offset_frames = offset;
         ci.size_frames = chunk_size;
         ci.is_last = is_last_chunk;
-        ci.tokens_predicted = chunk_tokens.size();
+        ci.tokens_predicted = pipeline_result.tokens.size();
 
+        // Process chunk based on whether it's first or subsequent
         if (chunk_idx == 0) {
-          // First chunk: keep all tokens and timings
-          token_ids = std::move(chunk_tokens);
-          // Convert timings to global frame indices (offset = 0 for first chunk)
-          for (auto& t : chunk_timings) {
-            t.frame_index += offset;
-          }
-          all_timings = std::move(chunk_timings);
-          if (!all_timings.empty()) {
-            last_emitted_global_frame = all_timings.back().frame_index;
-            have_last_emitted_frame = true;
-          }
-          ci.tokens_appended = token_ids.size();
-          ci.skip_prefix = 0;
-          ci.holdback = 0;
-          // Appended text is the entire first chunk
-          ci.appended_text = impl_->tokenizer.decode(token_ids);
+          process_first_chunk(*impl_, pipeline_result.tokens, pipeline_result.timings, offset,
+                              token_ids, all_timings, last_emitted_global_frame,
+                              have_last_emitted_frame, ci);
         } else {
-          // Subsequent chunks: use deduplication as safety net (FluidAudio approach)
-          // Even with LSTM state continuity, decoder state reset at chunk boundaries
-          // can cause some duplicates, so we apply deduplication as a safety net
-
-          auto dedup_result = deduplicate_chunk(
-              *impl_,
-              token_ids,
-              chunk_tokens,
-              chunk_timings,
-              offset,
-              chunk_size,
-              overlap_frames,
-              is_last_chunk,
-              last_emitted_global_frame,
-              have_last_emitted_frame
-          );
-
-          const size_t skip_count = dedup_result.skip_prefix;
-          const size_t emit_end = dedup_result.emit_end;
-
-          // Append tokens and timings, skipping duplicates and any filtered prefix/suffix
-          if (skip_count >= emit_end) {
-            if (std::getenv("EDDY_DEBUG")) std::cerr << "[INFO] Entire chunk consists of overlapped region; appending nothing\n";
-          } else {
-            const size_t append_count = emit_end - skip_count;
-            if (token_ids.capacity() < token_ids.size() + append_count) {
-              token_ids.reserve(token_ids.size() + append_count + 64);  // amortize future growth
-            }
-            token_ids.insert(token_ids.end(), chunk_tokens.begin() + skip_count, chunk_tokens.begin() + emit_end);
-            if (all_timings.capacity() < all_timings.size() + append_count) {
-              all_timings.reserve(all_timings.size() + append_count + 64);
-            }
-            all_timings.insert(all_timings.end(), chunk_timings.begin() + skip_count, chunk_timings.begin() + emit_end);
-
-            if (!all_timings.empty()) {
-              last_emitted_global_frame = all_timings.back().frame_index;
-              have_last_emitted_frame = true;
-            }
-          }
-
-          // Record dedup/holdback stats
-          const size_t total_curr = chunk_tokens.size();
-          const size_t appended = (skip_count >= emit_end) ? 0 : (emit_end - skip_count);
-          const size_t held_back = (emit_end <= total_curr) ? (total_curr - emit_end) : 0;
-          ci.tokens_appended = appended;
-          ci.skip_prefix = skip_count;
-          ci.holdback = held_back;
-          // Decode the appended slice as the chunk's individual output
-          if (appended > 0) {
-            ci.appended_text = impl_->tokenizer.decode_span(
-                chunk_tokens.data() + skip_count,
-                appended);
-          } else {
-            ci.appended_text.clear();
-          }
+          process_subsequent_chunk(*impl_, pipeline_result.tokens, pipeline_result.timings,
+                                   offset, chunk_size, overlap_frames, is_last_chunk,
+                                   token_ids, all_timings, last_emitted_global_frame,
+                                   have_last_emitted_frame, ci);
         }
 
         chunk_logs.push_back(ci);
         chunk_idx++;
 
-        // Check if we're done
         if (offset + chunk_size >= mel.frames) {
-          break;  // Processed all frames
+          break;
         }
 
-        // Move forward by stride (not full chunk size) to create overlap
         offset += stride;
       }
     }

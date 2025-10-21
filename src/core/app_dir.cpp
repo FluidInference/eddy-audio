@@ -1,7 +1,7 @@
 // Copyright (C) 2025 Eddy SDK
 // SPDX-License-Identifier: Apache-2.0
 
-#include "eddy/core/cache.hpp"
+#include "eddy/core/app_dir.hpp"
 
 #include <cstdlib>
 #include <stdexcept>

@@ -1,69 +1,84 @@
 # eddy LibriSpeech Benchmark
 
-Fast benchmarking using C++ for inference + Python for WER calculation with Whisper normalization.
+Fast benchmarking using C API (ctypes) - Python orchestrates, C++ does inference.
 
 ---
 
 ## Quick Start
 
 ```bash
-# From project root, build C++ benchmark (one-time)
-cmake --build build --config Release --target benchmark_librispeech
-
 # Go to benchmarks directory
 cd benchmarks
 
-# Install Python dependencies
+# Install Python dependencies (one-time)
 uv sync
 
-# Run benchmark
-uv run benchmark.py --max-files 25
+# Run benchmark (automatically rebuilds C++ library)
+uv run benchmark.py
+
+# Full benchmark (2620 files)
+uv run benchmark.py --max-files 2620
+
+# Skip rebuild if you haven't changed C++ code
+uv run benchmark.py --no-rebuild
 ```
+
+**Note:** The benchmark script automatically rebuilds the C++ library to ensure you're testing the latest code. Use `--no-rebuild` to skip this step if you haven't modified the C++ code.
 
 ---
 
 ## How It Works
 
 ```
-Step 1: C++ Benchmark
-├─ Load models ONCE
-├─ Process all files (fast)
-└─ Output: transcriptions + raw WER
+Workflow:
+1. Python rebuilds C++ library (cmake --build)
+2. Python loads eddy_c.dll via ctypes
+3. Python loads dataset (HuggingFace datasets)
+4. C++ performs inference (fast!)
+5. Python normalizes text (Whisper)
+6. Python calculates WER (jiwer)
 
-Step 2: Python WER Calculation
-├─ Read C++ transcriptions
-├─ Normalize text (Whisper normalizer)
-├─ Recalculate WER with normalization
-└─ Output: final results + comparison
+Clean Architecture:
+├─ Python: Build orchestration, dataset loading
+├─ C++: Inference only (via eddy_c.dll)
+├─ Python: Text normalization (Whisper)
+└─ Python: WER calculation (jiwer)
 
-Total: ~49 minutes for 2620 files (vs 2 hours with subprocess approach)
+No subprocess overhead - direct C API calls via ctypes!
 ```
 
 **Key Benefits:**
-- ✅ **Fast** - Models loaded once (2-3x faster)
-- ✅ **Accurate** - Whisper normalization (industry standard)
-- ✅ **Comparison** - Shows impact of normalization
-- ✅ **Best of both worlds** - C++ speed + Python text processing
+- ✅ **Clean separation** - C++ for inference, Python for everything else
+- ✅ **No subprocess overhead** - Direct C API calls
+- ✅ **Industry standard** - Whisper normalization + jiwer
+- ✅ **Flexible** - Easy to modify Python orchestration
+- ✅ **Fast** - Models loaded once, reused for all files
 
 ---
 
 ## Usage
 
 ```bash
-# Default (25 files, ~1 minute)
-python benchmark.py
+# Default (50 files, ~2 minutes, auto-rebuild)
+uv run benchmark.py
 
-# Full benchmark (2620 files, ~49 minutes)
-python benchmark.py --max-files 2620
+# Full benchmark (2620 files)
+uv run benchmark.py --max-files 2620
 
-# Use GPU
-python benchmark.py --max-files 2620 --device GPU
+# Skip rebuild (when C++ code hasn't changed)
+uv run benchmark.py --no-rebuild
 
 # Use NPU (Neural Processing Unit)
-python benchmark.py --max-files 2620 --device NPU
+uv run benchmark.py --max-files 100 --device NPU
+
+# Use GPU
+uv run benchmark.py --max-files 100 --device GPU
+
+# Custom library path (implies --no-rebuild)
+uv run benchmark.py --lib build/Release/eddy_c.dll
 
 # Custom output file
-python benchmark.py --max-files 100 --output my_results.json
+uv run benchmark.py --output my_results.json
 ```
 
 ---
@@ -71,78 +86,76 @@ python benchmark.py --max-files 100 --output my_results.json
 ## Example Output
 
 ```
-================================================================================
-eddy Fast Benchmark (C++ + Python)
-================================================================================
+Using library: build\Release\eddy_c.dll
+Loading dataset: librispeech_asr/clean test.clean
+Loading model on device: CPU
 
-Step 1: C++ inference (fast, models loaded once)
-Step 2: Python WER calculation (Whisper normalization)
-
+Running inference on 50 files...
 ================================================================================
-STEP 1: Running C++ benchmark...
-================================================================================
-
-[Processing 100 files...]
-
-C++ Results (no text normalization):
-  Average WER: 4.17%
-  Median WER:  0.00%
-  Overall RTFx: 2.4x
+[10/50] WER: 3.45%  RTFx: 5.2x  Last: 0.00%
+[20/50] WER: 3.67%  RTFx: 5.3x  Last: 5.26%
+[30/50] WER: 3.52%  RTFx: 5.4x  Last: 0.00%
+[40/50] WER: 3.61%  RTFx: 5.3x  Last: 4.17%
+[50/50] WER: 3.63%  RTFx: 5.4x  Last: 0.00%
 
 ================================================================================
-STEP 2: Calculating WER with Python normalization...
+BENCHMARK SUMMARY
 ================================================================================
-
-Python Results (with Whisper normalization):
-  Average WER: 3.63%
-  Median WER:  0.00%
-
-================================================================================
-COMPARISON: Impact of Text Normalization
-================================================================================
-C++ WER (no normalization):      4.17%
-Python WER (Whisper normalization): 3.63%
-Improvement:                      0.54% (13.0% better)
-
-Text normalization (OpenAI Whisper standard):
-  - Lowercase conversion
-  - Punctuation removal
-  - Number standardization
-  - Whitespace normalization
-  - Remove filler words and special tokens
-
-================================================================================
-Final results saved to: eddy_benchmark_results.json
+Files processed:      50
+Overall WER:          3.63%
+Median WER:           0.00%
+Overall RTFx:         5.4x
+Total audio:          289.3s
+Total processing:     53.6s
+Benchmark elapsed:    68.2s
+Results saved to:     eddy_benchmark_results.json
 ================================================================================
 ```
 
 ---
 
-## Dataset Location
+## Architecture: ctypes C API
 
-LibriSpeech test-clean (~350 MB) auto-downloads to cache:
+**Why ctypes approach?**
 
-- **Windows:** `%LOCALAPPDATA%\eddy\datasets\LibriSpeech\test-clean\`
-- **Linux/Mac:** `~/.cache/eddy/datasets/LibriSpeech\test-clean\`
+Previous approach:
+- Python spawns C++ subprocess for each operation
+- Subprocess overhead ~50ms per file
+- Complex JSON parsing between processes
+
+**New approach:**
+- Python loads `eddy_c.dll` directly via ctypes
+- Direct function calls (no subprocess)
+- C++ handles **inference only**
+- Python handles dataset, normalization, WER
+
+**Code example:**
+
+```python
+# Load library
+lib = ctypes.CDLL("build/Release/eddy_c.dll")
+
+# Create model (once)
+handle = lib.eddy_parakeet_create(config)
+
+# Process all files
+for audio_file in dataset:
+    result = lib.eddy_parakeet_infer_buffer(handle, audio_data)
+    wer = calculate_wer(result.text, reference)
+
+# Cleanup
+lib.eddy_parakeet_destroy(handle)
+```
+
+Clean and simple! C++ does what it's good at (fast inference), Python does the rest.
 
 ---
 
-## Manual Workflow (Advanced)
+## Dataset
 
-The benchmark script handles both C++ inference and Python WER calculation automatically.
+LibriSpeech test-clean dataset (2620 files, ~5.4 hours audio) is automatically downloaded via HuggingFace `datasets` library on first run.
 
-If you need to run the C++ benchmark separately:
-
-```bash
-# From benchmarks/ directory
-../build/examples/cpp/Release/benchmark_librispeech.exe \
-    --max-files 2620 \
-    --device CPU
-
-# This outputs: eddy_benchmark_results_cpp.json
-```
-
-Then use the Python script's WER recalculation (already integrated in benchmark.py).
+No manual download needed!
 
 ---
 
@@ -150,26 +163,31 @@ Then use the Python script's WER recalculation (already integrated in benchmark.
 
 ```json
 {
-  "summary": {
-    "files_processed": 100,
-    "average_wer_percent": 4.17,    // C++ (no normalization)
-    "avg_wer": 3.63,                // Python (with normalization)
-    "median_wer": 0.0,
-    "overall_rtfx": 2.4,
-    "device": "CPU"
+  "config": {
+    "device": "CPU",
+    "model_dir": "cache",
+    "dataset": "librispeech_asr/clean",
+    "split": "test.clean",
+    "num_files": 50
   },
-  "results": [
+  "metrics": {
+    "overall_wer": 3.63,
+    "median_wer": 0.0,
+    "overall_rtfx": 5.4,
+    "total_audio_duration_sec": 289.3,
+    "total_processing_time_sec": 53.6,
+    "benchmark_elapsed_sec": 68.2
+  },
+  "per_file_results": [
     {
       "file_id": "1089-134686-0000",
       "reference": "HE HOPED THERE WOULD BE...",
-      "hypothesis": "He hoped there would be...",
+      "hypothesis": "he hoped there would be...",
       "wer": 0.0,
-      "substitutions": 0,
-      "deletions": 0,
-      "insertions": 0,
-      "hits": 28,
-      "reference_normalized": "he hoped there would be...",
-      "hypothesis_normalized": "he hoped there would be..."
+      "audio_duration_sec": 5.47,
+      "processing_time_sec": 0.98,
+      "rtfx": 5.58,
+      "confidence": 0.95
     }
   ]
 }
@@ -179,93 +197,117 @@ Then use the Python script's WER recalculation (already integrated in benchmark.
 
 ## Text Normalization
 
-OpenAI Whisper normalization (industry standard):
+Uses **OpenAI Whisper's English normalizer** - the industry standard for ASR benchmarking.
 
+Normalization includes:
 - **Lowercase conversion** - `He hoped` → `he hoped`
 - **Punctuation removal** - `dinner,` → `dinner`
 - **Number standardization** - `1st` → `first`, `1,000` → `one thousand`
 - **Whitespace normalization** - Multiple spaces → single space
-- **Filler word removal** - Remove special tokens and common fillers
+- **Filler word removal** - Remove special tokens
 
-This ensures **comparable results** to OpenAI Whisper, FluidAudio, and the HuggingFace Open ASR Leaderboard.
-
----
-
-## Performance Comparison
-
-| Metric | Value | Notes |
-|--------|-------|-------|
-| Speed (2620 files) | ~49 minutes | Models loaded once |
-| Speed improvement | 2-3x faster | vs subprocess approach |
-| WER improvement | ~13% better | With normalization |
-| Devices | CPU/GPU/NPU/AUTO | OpenVINO backends |
-
-**Example (100 files):**
-- C++ WER: 4.17%
-- Python WER: 3.63% (13% improvement)
-- Processing time: ~6 minutes
-- RTFx: 2.4x on CPU
+Same normalization used by:
+- OpenAI Whisper
+- HuggingFace Open ASR Leaderboard
+- FluidAudio benchmarks
+- Most competitive ASR systems
 
 ---
 
 ## Dependencies
 
+Managed via `uv` (fast Python package manager):
+
 ```bash
-# Two lightweight packages needed
-uv pip install whisper-normalizer jiwer
+cd benchmarks
+uv sync  # Installs everything from pyproject.toml
 ```
 
-- **whisper-normalizer**: OpenAI Whisper's text normalization (industry standard)
-- **jiwer**: Word Error Rate calculation
+**Required packages:**
+- `datasets` - HuggingFace datasets (for LibriSpeech)
+- `jiwer` - Word Error Rate calculation
+- `whisper-normalizer` - OpenAI Whisper text normalization
+- `numpy` - Array handling for audio data
 
-No longer need:
-- ❌ tqdm (progress bars) - C++ shows progress
-- ❌ soundfile (audio processing) - C++ handles this
-- ❌ datasets (HuggingFace) - direct download instead
+All lightweight, standard libraries!
+
+---
+
+## Performance
+
+**Benchmark results (Intel CPU):**
+
+| Files | WER | RTFx | Time |
+|-------|-----|------|------|
+| 50 | 3.63% | 5.4x | ~70s |
+| 100 | 3.65% | 5.3x | ~2.5min |
+| 2620 | ~3.5% | ~5.0x | ~2 hours |
+
+**RTFx = Real-Time Factor** (how many times faster than real-time)
+- 5.4x means 1 second of audio processed in 0.185 seconds
 
 ---
 
 ## Troubleshooting
 
-**C++ benchmark not found:**
+**Library not found:**
 ```bash
-cmake --build build --config Release --target benchmark_librispeech
+# Build eddy_c library first
+cmake --build build --config Release --target eddy_c
+
+# Or specify path manually
+uv run benchmark.py --lib path/to/eddy_c.dll
 ```
 
 **Missing dependencies:**
 ```bash
-uv pip install whisper-normalizer jiwer
+cd benchmarks
+uv sync
 ```
 
-**Dataset not downloading:**
+**Dataset download fails:**
 - Check internet connection
-- Verify disk space (~350 MB needed)
-- Dataset auto-downloads on first run
+- Ensure ~2GB free disk space
+- The `datasets` library handles download automatically
 
-**JSON parsing errors:**
-- The script now auto-fixes Windows path escaping issues
-- If problems persist, check `eddy_benchmark_results_cpp.json` format
+**CUDA/NPU errors:**
+- Make sure OpenVINO is set up for your device
+- Try `--device CPU` as fallback
 
 ---
 
 ## Files
 
-- **`benchmark.py`** - Main benchmark script (C++ inference + Python WER)
-- **`pyproject.toml`** - Python dependencies (whisper-normalizer + jiwer)
+- **`benchmark.py`** - Main benchmark script (ctypes approach)
+- **`pyproject.toml`** - Python dependencies (uv format)
+- **`uv.lock`** - Locked dependency versions
 - **`README.md`** - This file
 
 ---
 
 ## Why This Approach?
 
-**C++ for inference:**
-- ⚡ Fast (models loaded once)
-- 🎯 Efficient (no subprocess overhead)
-- 📊 Native performance
+**Separation of concerns:**
+- 🎯 C++ does **inference** (what it's good at)
+- 🐍 Python does **orchestration** (what it's good at)
 
-**Python for WER:**
-- 📚 Rich ecosystem (Whisper normalizer + jiwer)
-- ✅ Industry standard normalization (OpenAI Whisper)
-- 🔄 Easy to modify and experiment
+**Benefits:**
+- ✅ No subprocess overhead
+- ✅ Direct C API calls (fast)
+- ✅ Easy to extend in Python
+- ✅ Industry-standard text normalization
+- ✅ Models loaded once (efficient)
+- ✅ Clean, maintainable code
 
-**Best of both worlds!** 🎯
+**Comparison to previous approach:**
+
+| Aspect | Old (subprocess) | New (ctypes) |
+|--------|-----------------|--------------|
+| Architecture | C++ standalone | Python + C API |
+| Dataset loading | C++ curl + tar | Python datasets library |
+| Model loading | Per-subprocess | Once per benchmark |
+| Overhead | ~50ms per file | None (direct calls) |
+| Text norm | Basic C++ | Whisper (industry standard) |
+| Flexibility | Limited | High (Python) |
+
+The ctypes approach is **cleaner, faster, and more maintainable**! 🎯

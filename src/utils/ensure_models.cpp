@@ -1,7 +1,7 @@
 // Centralized fetch/ensure logic for Parakeet model files.
 
 #include "eddy/utils/ensure_models.hpp"
-#include "eddy/core/cache.hpp"
+#include "eddy/core/app_dir.hpp"
 
 #include <cstdlib>
 #include <sstream>

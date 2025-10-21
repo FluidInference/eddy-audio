@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "eddy/backends/openvino_backend.hpp"
-#include "eddy/core/cache.hpp"
+#include "eddy/core/app_dir.hpp"
 #include "eddy/models/parakeet-v2/parakeet.hpp"
 #include "eddy/models/parakeet-v2/parakeet_openvino.hpp"
 #include "eddy/utils/ensure_models.hpp"

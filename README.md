@@ -14,19 +14,45 @@ eddy is a C++ inference library designed for native runtimes and multi-vendor ed
 - `docs/` – design notes and usage guides.
 - `benchmarks/` – Python scripts for LibriSpeech ASR benchmarking (see [benchmarks/README.md](benchmarks/README.md)).
 
+## Dependencies
+
+### Required
+- **OpenVINO** (2025.x) - AI inference runtime
+- **libsndfile** - Audio file I/O (WAV, FLAC, OGG, etc.)
+- **libsamplerate** - High-quality audio resampling
+
+### Optional
+- **OpenVINO GenAI** - For Whisper support
+
+### Installing with vcpkg (recommended)
+
+```bash
+# Install vcpkg dependencies (uses vcpkg.json manifest)
+vcpkg install
+
+# Or manually install specific packages
+vcpkg install openvino libsndfile libsamplerate
+```
+
 ## Building
 
-```
+```bash
+# Configure with vcpkg toolchain
+cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=[path-to-vcpkg]/scripts/buildsystems/vcpkg.cmake
+
+# Or specify OpenVINO manually if not using vcpkg
 cmake -S . -B build -DOpenVINO_DIR=/opt/intel/openvino/runtime/cmake
-cmake --build build
+
+# Build
+cmake --build build --config Release
 ```
 
-The build emits the static target `eddy` with OpenVINO linked in when `EDDY_ENABLE_OPENVINO=ON` (default).
+The build emits the static target `eddy` with all required dependencies.
 
-Optional Whisper (OpenVINO GenAI) support is disabled by default. Enable with:
+### Optional Whisper Support
 
-```
-cmake -S . -B build -DEDDY_ENABLE_OPENVINO=ON -DEDDY_ENABLE_WHISPER=ON -DOpenVINOGenAI_DIR="<path-to-genai-cmake>"
+```bash
+cmake -S . -B build -DEDDY_ENABLE_WHISPER=ON -DOpenVINOGenAI_DIR="<path-to-genai-cmake>"
 ```
 
 ## Models (auto-download on first run)
