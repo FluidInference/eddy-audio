@@ -2,7 +2,7 @@
 
 #include "eddy/models/parakeet-v2/parakeet_openvino.hpp"
 #include "eddy/models/parakeet-v2/parakeet_encoder.hpp"
-#include "eddy/utils/tokenizer.hpp"
+#include "eddy/models/parakeet-v2/tokenizer.hpp"
 
 #include <openvino/openvino.hpp>
 #include <mutex>

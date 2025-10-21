@@ -1,5 +1,4 @@
-// Centralized helper to ensure Parakeet OpenVINO model files exist in the Eddy cache.
-// If files are missing, attempts a best-effort fetch using the bundled hf_fetch_models tool when available.
+// Centralized helper to check if Parakeet OpenVINO model files exist in the target directory.
 
 #pragma once
 
@@ -9,8 +8,12 @@
 
 namespace eddy::parakeet {
 
-// Returns true if all required files are present after the call. On failure,
-// returns false and optionally fills last_error.
+// Checks if all required model files exist in target_dir.
+// Returns true if all files are present, false otherwise.
+// Optionally fills last_error with a descriptive message on failure.
+//
+// Note: This function only checks for existence - it does NOT automatically download models.
+// Users should download models manually using hf_fetch_models or from HuggingFace.
 bool ensure_models_available(const std::filesystem::path& target_dir,
                              std::string* last_error = nullptr,
                              const std::vector<std::string>& required = {

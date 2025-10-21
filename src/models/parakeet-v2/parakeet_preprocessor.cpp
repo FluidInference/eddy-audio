@@ -33,35 +33,32 @@ MelFeatures run_preprocessor(ParakeetImpl& impl, const AudioSegment& segment) {
     throw std::invalid_argument("Parakeet OpenVINO pipeline expects 16 kHz audio samples");
   }
 
-  // Detect static preprocessor input length (window size). If static, we will
-  // process the audio in windows and concatenate mel outputs to avoid
-  // truncating long utterances. If dynamic, we pass the full audio once.
-  size_t window_samples = 0;  // 0 means dynamic length supported
-  try {
-    const auto pshape = impl.preproc_model.input(0).get_partial_shape();
-    if (pshape.rank().is_static() && pshape.rank().get_length() >= 2) {
-      const auto len_dim = pshape[1];
-      if (len_dim.is_static()) {
-        const auto static_len = static_cast<size_t>(len_dim.get_length());
-        if (static_len > 0) {
-          window_samples = static_len;  // fixed-size preprocessor
-        }
-      }
-    }
-  } catch (...) {
-    // If shape query fails, assume dynamic
-    window_samples = 0;
+  // Get preprocessor input window size (Parakeet mel spec model has static shape [1, 160000])
+  // For long audio, we process in windows and concatenate mel outputs.
+  const auto pshape = impl.preproc_model.input(0).get_partial_shape();
+  const auto len_dim = pshape[1];
+
+  if (!len_dim.is_static()) {
+    throw std::runtime_error("Parakeet preprocessor model must have static input shape");
+  }
+
+  const size_t window_samples = static_cast<size_t>(len_dim.get_length());
+  if (window_samples == 0) {
+    throw std::runtime_error("Parakeet preprocessor window size cannot be zero");
   }
 
   MelFeatures features;
 
   auto run_window = [&](const float* pcm_ptr, size_t pcm_count) -> std::pair<ov::Tensor, ov::Tensor> {
-    const size_t req = window_samples > 0 ? window_samples : pcm_count;
-    ov::Tensor audio_signal(ov::element::f32, {1, req});
+    // Create audio signal tensor with static window size, zero-padded
+    ov::Tensor audio_signal(ov::element::f32, {1, window_samples});
     std::fill(audio_signal.data<float>(), audio_signal.data<float>() + audio_signal.get_size(), 0.0F);
-    if (pcm_count) {
-      std::copy(pcm_ptr, pcm_ptr + std::min(req, pcm_count), audio_signal.data<float>());
+
+    const size_t samples_to_copy = std::min(window_samples, pcm_count);
+    if (samples_to_copy > 0) {
+      std::copy(pcm_ptr, pcm_ptr + samples_to_copy, audio_signal.data<float>());
     }
+
     // Match preprocessor length element type to model port to avoid i32/i64 mismatches
     ov::Tensor audio_length;
     try {
@@ -69,15 +66,15 @@ MelFeatures run_preprocessor(ParakeetImpl& impl, const AudioSegment& segment) {
       const auto len_et = len_port.get_element_type();
       if (len_et == ov::element::i64) {
         audio_length = ov::Tensor(ov::element::i64, {1});
-        audio_length.data<int64_t>()[0] = static_cast<int64_t>(std::min(req, pcm_count));
+        audio_length.data<int64_t>()[0] = static_cast<int64_t>(samples_to_copy);
       } else {
         audio_length = ov::Tensor(ov::element::i32, {1});
-        audio_length.data<int32_t>()[0] = static_cast<int32_t>(std::min(req, pcm_count));
+        audio_length.data<int32_t>()[0] = static_cast<int32_t>(samples_to_copy);
       }
     } catch (...) {
       // Fallback to i64
       audio_length = ov::Tensor(ov::element::i64, {1});
-      audio_length.data<int64_t>()[0] = static_cast<int64_t>(std::min(req, pcm_count));
+      audio_length.data<int64_t>()[0] = static_cast<int64_t>(samples_to_copy);
     }
 
     impl.preproc_request.set_input_tensor(0, audio_signal);  // audio_signal
@@ -90,8 +87,8 @@ MelFeatures run_preprocessor(ParakeetImpl& impl, const AudioSegment& segment) {
     };
   };
 
-  if (window_samples == 0 || segment.pcm.size() <= window_samples) {
-    // Single-shot path: dynamic model or short audio
+  if (segment.pcm.size() <= window_samples) {
+    // Single-shot path: short audio fits in one window
     auto [mel_tensor, length_tensor] = run_window(segment.pcm.data(), segment.pcm.size());
 
     const int64_t valid_frames = read_length_scalar(length_tensor);

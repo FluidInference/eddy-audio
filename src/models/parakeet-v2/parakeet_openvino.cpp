@@ -21,7 +21,7 @@
 
 #include <nlohmann/json.hpp>
 #include <optional>
-#include "eddy/utils/tokenizer.hpp"
+#include "eddy/models/parakeet-v2/tokenizer.hpp"
 
 namespace eddy::parakeet {
 

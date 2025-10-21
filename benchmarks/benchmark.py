@@ -31,15 +31,10 @@ from typing import Dict, Any
 
 import numpy as np
 
-# Import dependencies
-try:
-    from datasets import load_dataset, Audio
-    import jiwer
-    from whisper_normalizer.english import EnglishTextNormalizer
-except ImportError as e:
-    print(f"ERROR: Missing dependency: {e}")
-    print("Install with: cd benchmarks && uv sync")
-    sys.exit(1)
+# Import dependencies (automatically managed by uv when running: uv run benchmark.py)
+from datasets import load_dataset, Audio
+import jiwer
+from whisper_normalizer.english import EnglishTextNormalizer
 
 # Initialize Whisper's English text normalizer (industry standard)
 english_normalizer = EnglishTextNormalizer()

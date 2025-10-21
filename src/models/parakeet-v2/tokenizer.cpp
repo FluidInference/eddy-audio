@@ -1,4 +1,4 @@
-#include "eddy/utils/tokenizer.hpp"
+#include "eddy/models/parakeet-v2/tokenizer.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -44,21 +44,42 @@ std::string Tokenizer::decode(const std::vector<int>& token_ids) const {
 std::string Tokenizer::decode_span(const int* tokens, size_t count) const {
   std::string result;
   bool first_piece = true;
+
   for (size_t idx_t = 0; idx_t < count; ++idx_t) {
     int token_id = tokens[idx_t];
-    if (token_id == blank_id_ || token_id < 0) continue;
+
+    // Skip blank tokens and invalid IDs
+    if (token_id == blank_id_ || token_id < 0) {
+      continue;
+    }
+
     const auto idx = static_cast<size_t>(token_id);
-    if (idx >= vocab_.size()) continue;
+    if (idx >= vocab_.size()) {
+      continue;
+    }
+
+    // Get the token piece from vocabulary
     std::string_view piece{vocab_[idx]};
-    if (piece.empty()) continue;
+    if (piece.empty()) {
+      continue;
+    }
+
+    // Handle SentencePiece word boundary marker
     bool prepend_space = piece.starts_with(kWordBoundary);
-    if (prepend_space) piece.remove_prefix(kWordBoundary.size());
+    if (prepend_space) {
+      piece.remove_prefix(kWordBoundary.size());
+    }
+
+    // Append to result with appropriate spacing
     if (!piece.empty()) {
-      if (!first_piece && prepend_space && !result.empty()) result.push_back(' ');
+      if (!first_piece && prepend_space && !result.empty()) {
+        result.push_back(' ');
+      }
       result.append(piece);
       first_piece = false;
     }
   }
+
   return result;
 }
 
