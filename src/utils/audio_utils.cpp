@@ -35,8 +35,17 @@ std::vector<float> read_wav(const std::string& filename) {
                                  std::to_string(info.channels) + " channels");
     }
 
+    // Validate audio dimensions to prevent overflow
+    if (info.frames < 0) {
+        throw std::runtime_error("Invalid audio file: negative frame count");
+    }
+    if (info.frames > 0 && static_cast<size_t>(info.channels) > SIZE_MAX / static_cast<size_t>(info.frames)) {
+        throw std::runtime_error("Audio file too large: " + std::to_string(info.frames) +
+                                 " frames × " + std::to_string(info.channels) + " channels would overflow");
+    }
+
     // Read all audio data as float32 (libsndfile handles conversion automatically)
-    std::vector<float> data(info.frames * info.channels);
+    std::vector<float> data(static_cast<size_t>(info.frames) * static_cast<size_t>(info.channels));
     sf_count_t frames_read = sf_readf_float(file, data.data(), info.frames);
 
     if (frames_read != info.frames) {
@@ -54,8 +63,22 @@ std::vector<float> read_wav(const std::string& filename) {
 
     // Resample to 16kHz if needed
     if (info.samplerate != REQUIRED_SAMPLE_RATE) {
+        // Validate sample rate to prevent division by zero
+        if (info.samplerate <= 0) {
+            throw std::runtime_error("Invalid audio file: sample rate must be positive, got " +
+                                     std::to_string(info.samplerate));
+        }
+
         const double ratio = static_cast<double>(REQUIRED_SAMPLE_RATE) / info.samplerate;
-        const size_t output_frames = static_cast<size_t>(info.frames * ratio);
+        const double output_frames_double = static_cast<double>(info.frames) * ratio;
+
+        // Check for overflow when converting to size_t
+        if (output_frames_double < 0 || output_frames_double > static_cast<double>(SIZE_MAX)) {
+            throw std::runtime_error("Resampled audio too large: " + std::to_string(info.frames) +
+                                     " frames × ratio " + std::to_string(ratio) + " would overflow");
+        }
+
+        const size_t output_frames = static_cast<size_t>(output_frames_double);
 
         std::vector<float> resampled(output_frames);
 
@@ -83,8 +106,19 @@ std::vector<float> read_wav(const std::string& filename) {
 // Convert in-memory PCM16 buffer to float32 mono
 // Uses libsndfile's normalization constants for consistency with read_wav()
 std::vector<float> pcm16_to_float32(const int16_t* data, size_t size, int channels) {
+    // Validate input parameters
+    if (!data) {
+        throw std::invalid_argument("data pointer is null");
+    }
     if (channels != 1 && channels != 2) {
         throw std::runtime_error("Only mono or stereo audio supported");
+    }
+    if (size == 0) {
+        throw std::invalid_argument("size must be greater than zero");
+    }
+    if (size % channels != 0) {
+        throw std::invalid_argument("size (" + std::to_string(size) + ") is not divisible by channels (" +
+                                    std::to_string(channels) + "), indicating incomplete frames");
     }
 
     const size_t num_frames = size / channels;

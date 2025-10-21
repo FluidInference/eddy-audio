@@ -1,5 +1,5 @@
 #include "eddy/models/parakeet-v2/parakeet_openvino.hpp"
-#include "parakeet_openvino_impl.hpp"
+#include "eddy/models/parakeet-v2/detail/parakeet_impl.hpp"
 #include "eddy/models/parakeet-v2/parakeet_preprocessor.hpp"
 #include "eddy/models/parakeet-v2/parakeet_encoder.hpp"
 #include "eddy/models/parakeet-v2/parakeet_decoder.hpp"
@@ -28,6 +28,15 @@ namespace eddy::parakeet {
 
 namespace {
 
+constexpr size_t MEL_BINS = 128;  // Standard mel-spectrogram bin count
+constexpr size_t VECTOR_RESERVE_SLACK = 64;  // Extra capacity when reserving vector space
+
+// Whether debug logging is enabled (cached for performance)
+bool is_debug_enabled() {
+  static bool cached = (std::getenv("EDDY_DEBUG") != nullptr);
+  return cached;
+}
+
 struct ChunkPipelineResult {
   std::vector<int> tokens;
   std::vector<TokenTiming> timings;
@@ -50,7 +59,7 @@ struct MelProcessingResult {
 // Note: decoder_state is passed by reference and will be updated with LSTM state
 // for continuity across chunks
 ChunkPipelineResult run_chunk_pipeline(
-    OpenVINOParakeet::Impl& impl,
+    ParakeetImpl& impl,
     const MelFeatures& mel,
     const SegmentOptions& options,
     DecoderState& decoder_state,
@@ -77,12 +86,28 @@ ChunkPipelineResult run_chunk_pipeline(
 
 // Extract a chunk of mel features from the full mel spectrogram
 MelFeatures extract_mel_chunk(const MelFeatures& full_mel, size_t offset, size_t chunk_size) {
+  // Validate bounds
+  if (offset + chunk_size > full_mel.frames) {
+    throw std::runtime_error("Chunk extends beyond mel frames: offset=" +
+                             std::to_string(offset) + " + chunk_size=" +
+                             std::to_string(chunk_size) + " > frames=" +
+                             std::to_string(full_mel.frames));
+  }
+
+  // Validate data buffer size
+  const size_t required_size = MEL_BINS * full_mel.frames;
+  if (full_mel.data.size() < required_size) {
+    throw std::runtime_error("Mel data buffer too small: expected at least " +
+                             std::to_string(required_size) + " elements, got " +
+                             std::to_string(full_mel.data.size()));
+  }
+
   MelFeatures chunk;
   chunk.frames = chunk_size;
-  chunk.data.resize(128 * chunk_size);
+  chunk.data.resize(MEL_BINS * chunk_size);
 
   // Copy mel data for this chunk (mel is stored as [mel_bins][time])
-  for (size_t bin = 0; bin < 128; ++bin) {
+  for (size_t bin = 0; bin < MEL_BINS; ++bin) {
     const float* src = full_mel.data.data() + bin * full_mel.frames + offset;
     float* dst = chunk.data.data() + bin * chunk_size;
     std::copy(src, src + chunk_size, dst);
@@ -93,7 +118,7 @@ MelFeatures extract_mel_chunk(const MelFeatures& full_mel, size_t offset, size_t
 
 // Process the first chunk - keep all tokens without deduplication
 void process_first_chunk(
-    OpenVINOParakeet::Impl& impl,
+    ParakeetImpl& impl,
     std::vector<int>& chunk_tokens,
     std::vector<TokenTiming>& chunk_timings,
     size_t offset,
@@ -107,6 +132,10 @@ void process_first_chunk(
 
   // Convert timings to global frame indices
   for (auto& t : chunk_timings) {
+    if (t.frame_index > SIZE_MAX - offset) {
+      throw std::runtime_error("Integer overflow in frame_index adjustment: frame_index=" +
+                               std::to_string(t.frame_index) + " offset=" + std::to_string(offset));
+    }
     t.frame_index += offset;
   }
   all_timings = std::move(chunk_timings);
@@ -124,7 +153,7 @@ void process_first_chunk(
 
 // Process subsequent chunks with deduplication
 void process_subsequent_chunk(
-    OpenVINOParakeet::Impl& impl,
+    ParakeetImpl& impl,
     std::vector<int>& chunk_tokens,
     std::vector<TokenTiming>& chunk_timings,
     size_t offset,
@@ -155,19 +184,19 @@ void process_subsequent_chunk(
 
   // Append tokens and timings, skipping duplicates and any filtered prefix/suffix
   if (skip_count >= emit_end) {
-    if (std::getenv("EDDY_DEBUG")) {
-      std::cerr << "[INFO] Entire chunk consists of overlapped region; appending nothing\n";
+    if (is_debug_enabled()) {
+      std::cerr << "[EDDY_DEBUG] Entire chunk consists of overlapped region; appending nothing\n";
     }
   } else {
     const size_t append_count = emit_end - skip_count;
 
     if (token_ids.capacity() < token_ids.size() + append_count) {
-      token_ids.reserve(token_ids.size() + append_count + 64);
+      token_ids.reserve(token_ids.size() + append_count + VECTOR_RESERVE_SLACK);
     }
     token_ids.insert(token_ids.end(), chunk_tokens.begin() + skip_count, chunk_tokens.begin() + emit_end);
 
     if (all_timings.capacity() < all_timings.size() + append_count) {
-      all_timings.reserve(all_timings.size() + append_count + 64);
+      all_timings.reserve(all_timings.size() + append_count + VECTOR_RESERVE_SLACK);
     }
     all_timings.insert(all_timings.end(), chunk_timings.begin() + skip_count, chunk_timings.begin() + emit_end);
 
@@ -195,7 +224,7 @@ void process_subsequent_chunk(
 
 // Process mel features - handles both single chunk and multi-chunk (long audio) cases
 MelProcessingResult process_mel_features(
-    OpenVINOParakeet::Impl& impl,
+    ParakeetImpl& impl,
     const MelFeatures& mel,
     const SegmentOptions& options,
     size_t max_frames) {

@@ -1,5 +1,5 @@
 #include "eddy/models/parakeet-v2/parakeet_preprocessor.hpp"
-#include "parakeet_openvino_impl.hpp"
+#include "eddy/models/parakeet-v2/detail/parakeet_impl.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -9,18 +9,29 @@ namespace eddy::parakeet {
 
 namespace {
 
-int64_t read_length_scalar(const ov::Tensor& t) {
+// Read a single scalar length value from a tensor that may be i32 or i64.
+// Validates that the length is non-negative.
+[[nodiscard]] int64_t read_length_scalar(const ov::Tensor& t) {
   const auto et = t.get_element_type();
+  int64_t value;
 
   if (et == ov::element::i64) {
-    return t.data<int64_t>()[0];
+    value = t.data<int64_t>()[0];
+  } else if (et == ov::element::i32) {
+    int32_t val32 = t.data<int32_t>()[0];
+    if (val32 < 0) {
+      throw std::runtime_error("Preprocessor length is negative: " + std::to_string(val32));
+    }
+    value = static_cast<int64_t>(val32);
+  } else {
+    throw std::runtime_error("Unsupported length tensor element type");
   }
 
-  if (et == ov::element::i32) {
-    return static_cast<int64_t>(t.data<int32_t>()[0]);
+  if (value < 0) {
+    throw std::runtime_error("Preprocessor length is negative: " + std::to_string(value));
   }
 
-  throw std::runtime_error("Unsupported length tensor element type");
+  return value;
 }
 
 }  // namespace
@@ -103,6 +114,12 @@ MelFeatures run_preprocessor(ParakeetImpl& impl, const AudioSegment& segment) {
 
     const size_t mel_bins = mel_shape[1];
     const size_t time_steps = mel_shape[2];
+
+    // Check for overflow in mel_bins * time_steps
+    if (mel_bins > 0 && time_steps > SIZE_MAX / mel_bins) {
+      throw std::runtime_error("Mel tensor too large: " + std::to_string(mel_bins) +
+                               " bins × " + std::to_string(time_steps) + " frames would overflow");
+    }
     const size_t elements = mel_bins * time_steps;
 
     // Retain tensors for zero-copy into encoder when shapes match
@@ -159,6 +176,12 @@ MelFeatures run_preprocessor(ParakeetImpl& impl, const AudioSegment& segment) {
 
     if (total_frames == 0) {
       throw std::runtime_error("Preprocessor produced no frames for long audio");
+    }
+
+    // Check for overflow in kMelBins * total_frames
+    if (total_frames > SIZE_MAX / kMelBins) {
+      throw std::runtime_error("Mel tensor too large: " + std::to_string(kMelBins) +
+                               " bins × " + std::to_string(total_frames) + " frames would overflow");
     }
 
     // Flatten into time-major buffer [bin][time]

@@ -1,5 +1,5 @@
 #include "eddy/models/parakeet-v2/parakeet_encoder.hpp"
-#include "parakeet_openvino_impl.hpp"
+#include "eddy/models/parakeet-v2/detail/parakeet_impl.hpp"
 #include "eddy/models/parakeet-v2/parakeet_preprocessor.hpp"
 
 #include <algorithm>
@@ -10,16 +10,31 @@ namespace eddy::parakeet {
 
 namespace {
 
+constexpr size_t MEL_BINS = 128;  // Standard mel-spectrogram bin count
+
 // Read a single scalar length value from a tensor that may be i32 or i64.
+// Validates that the length is non-negative.
 int64_t read_length_scalar(const ov::Tensor& t) {
   const auto et = t.get_element_type();
+  int64_t value;
+
   if (et == ov::element::i64) {
-    return t.data<int64_t>()[0];
+    value = t.data<int64_t>()[0];
   } else if (et == ov::element::i32) {
-    return static_cast<int64_t>(t.data<int32_t>()[0]);
+    int32_t val32 = t.data<int32_t>()[0];
+    if (val32 < 0) {
+      throw std::runtime_error("Encoder length is negative: " + std::to_string(val32));
+    }
+    value = static_cast<int64_t>(val32);
   } else {
     throw std::runtime_error("Encoder length tensor has unexpected element type (expected i32 or i64)");
   }
+
+  if (value < 0) {
+    throw std::runtime_error("Encoder length is negative: " + std::to_string(value));
+  }
+
+  return value;
 }
 
 }  // namespace
@@ -42,13 +57,22 @@ EncoderActivations run_encoder(ParakeetImpl& impl, const MelFeatures& mel) {
 
   if (needs_padding) {
     // Pad/trim: copy into a tensor matching encoder's expected frames
-    mel_tensor = ov::Tensor(ov::element::f32, {1, 128, impl.encoder_expected_frames});
+    mel_tensor = ov::Tensor(ov::element::f32, {1, MEL_BINS, impl.encoder_expected_frames});
     std::fill(mel_tensor.data<float>(), mel_tensor.data<float>() + mel_tensor.get_size(), 0.0F);
 
     actual_frames = std::min(impl.encoder_expected_frames, mel.frames);
+
+    // Validate mel data buffer size
+    const size_t required_size = MEL_BINS * mel.frames;
+    if (mel.data.size() < required_size) {
+      throw std::runtime_error("Mel data buffer too small: expected at least " +
+                               std::to_string(required_size) + " elements, got " +
+                               std::to_string(mel.data.size()));
+    }
+
     const size_t src_stride = mel.frames;
     const size_t dst_stride = impl.encoder_expected_frames;
-    for (size_t bin = 0; bin < 128; ++bin) {
+    for (size_t bin = 0; bin < MEL_BINS; ++bin) {
       const float* src = mel.data.data() + bin * src_stride;
       float* dst = mel_tensor.data<float>() + bin * dst_stride;
       std::copy(src, src + actual_frames, dst);
@@ -84,7 +108,13 @@ EncoderActivations run_encoder(ParakeetImpl& impl, const MelFeatures& mel) {
     throw std::runtime_error("Unexpected encoder output tensor shape");
   }
   activations.time_steps = shape[2];
-  activations.valid_frames = static_cast<size_t>(std::min<int64_t>(read_length_scalar(encoder_length_tensor), static_cast<int64_t>(activations.time_steps)));
+
+  // Read encoder length (validated to be non-negative)
+  const int64_t encoder_length = read_length_scalar(encoder_length_tensor);
+
+  // Safe conversion: encoder_length is non-negative, so cast is safe
+  // Use min to ensure valid_frames doesn't exceed time_steps
+  activations.valid_frames = std::min(static_cast<size_t>(encoder_length), activations.time_steps);
 
   // Zero-copy: retain tensor and read directly downstream
   activations.tensor = encoder_tensor;

@@ -1,5 +1,5 @@
 #include "eddy/models/parakeet-v2/parakeet_decoder.hpp"
-#include "parakeet_openvino_impl.hpp"
+#include "eddy/models/parakeet-v2/detail/parakeet_impl.hpp"
 #include "eddy/models/parakeet-v2/parakeet_encoder.hpp"
 
 #include <algorithm>
@@ -11,9 +11,127 @@
 
 namespace eddy::parakeet {
 
+namespace {
+
 // Named constants for decoder behavior
 constexpr size_t DEFAULT_MAX_ADDITIONAL_STEPS = 8;
 constexpr size_t DEFAULT_MAX_CONSECUTIVE_BLANKS = 1;
+
+// Helper: Find token with highest score (argmax)
+size_t find_best_token(const float* logits, size_t offset, size_t vocab_size, float& out_score) {
+  size_t best_token = 0;
+  float best_score = logits[offset + 0];
+  for (size_t i = 1; i < vocab_size; ++i) {
+    const float score = logits[offset + i];
+    if (score > best_score) {
+      best_score = score;
+      best_token = i;
+    }
+  }
+  out_score = best_score;
+  return best_token;
+}
+
+// Helper: Calculate softmax probability (confidence) for a token
+float calculate_confidence(const float* logits, size_t offset, size_t vocab_size, float token_score) {
+  float sum_exp = 0.0F;
+  for (size_t i = 0; i < vocab_size; ++i) {
+    sum_exp += std::exp(logits[offset + i]);
+  }
+  // Protect against division by zero (unlikely but possible if all logits are -inf)
+  if (sum_exp > 0.0F) {
+    return std::exp(token_score) / sum_exp;
+  }
+  return 0.0F;
+}
+
+// Helper: Extract encoder frame data into joint network input tensor
+void extract_encoder_frame(const EncoderActivations& encoder,
+                           size_t frame_index,
+                           size_t encoder_hidden_size,
+                           ov::Tensor& joint_enc_in) {
+  const float* enc = encoder.tensor.data<float>();
+  float* dst = joint_enc_in.data<float>();
+
+  // Bounds check: verify we can read the last channel's frame
+  const size_t max_offset = (encoder_hidden_size - 1) * encoder.time_steps + frame_index;
+  if (max_offset >= encoder.tensor.get_size()) {
+    throw std::runtime_error("Encoder tensor access out of bounds: offset=" +
+                             std::to_string(max_offset) +
+                             " size=" + std::to_string(encoder.tensor.get_size()));
+  }
+
+  // Copy encoder output for the specified frame
+  for (size_t channel = 0; channel < encoder_hidden_size; ++channel) {
+    const size_t offset = channel * encoder.time_steps + frame_index;
+    dst[channel] = enc[offset];
+  }
+}
+
+// Helper: Run decoder or use cached output
+struct DecoderOutput {
+  ov::Tensor next_hidden;
+  ov::Tensor next_cell;
+  bool used_cache;
+};
+
+DecoderOutput run_decoder_or_use_cache(ParakeetImpl& impl,
+                                       DecoderState& state,
+                                       int last_token,
+                                       ov::Tensor& hidden_state,
+                                       ov::Tensor& cell_state,
+                                       ov::Tensor& token_input,
+                                       ov::element::Type targets_et,
+                                       ov::Tensor& joint_dec_in,
+                                       double& t_decoder_ms) {
+  DecoderOutput result;
+
+  // Check if we can use cached decoder output
+  if (state.has_cached_output && last_token == state.last_token.value_or(-1)) {
+    // CACHE HIT: Reuse cached decoder output
+    std::memcpy(joint_dec_in.data<float>(), state.cached_decoder_output.data<float>(),
+                joint_dec_in.get_byte_size());
+    result.next_hidden = hidden_state;
+    result.next_cell = cell_state;
+    result.used_cache = true;
+
+  } else {
+    // CACHE MISS: Need to run decoder LSTM
+    if (targets_et == ov::element::i64) {
+      token_input.data<int64_t>()[0] = static_cast<int64_t>(last_token);
+    } else {
+      token_input.data<int32_t>()[0] = static_cast<int32_t>(last_token);
+    }
+
+    impl.decoder_request.set_tensor(impl.decoder_model.input("targets"), token_input);
+    impl.decoder_request.set_tensor(impl.decoder_model.input("h_in"), hidden_state);
+    impl.decoder_request.set_tensor(impl.decoder_model.input("c_in"), cell_state);
+
+    auto td0 = std::chrono::steady_clock::now();
+    impl.decoder_request.infer();
+    auto td1 = std::chrono::steady_clock::now();
+    t_decoder_ms += std::chrono::duration<double, std::milli>(td1 - td0).count();
+
+    ov::Tensor decoder_output = impl.decoder_request.get_output_tensor(0);
+    result.next_hidden = impl.decoder_request.get_output_tensor(1);
+    result.next_cell = impl.decoder_request.get_output_tensor(2);
+
+    // Copy decoder output to joint network input
+    std::memcpy(joint_dec_in.data<float>(), decoder_output.data<float>(),
+                decoder_output.get_byte_size());
+
+    // Cache this decoder output for next iteration
+    state.cached_decoder_output = ov::Tensor(ov::element::f32, {1, 1, impl.decoder_hidden_size});
+    std::memcpy(state.cached_decoder_output.data<float>(), decoder_output.data<float>(),
+                decoder_output.get_byte_size());
+    state.has_cached_output = true;
+    result.used_cache = false;
+  }
+
+  return result;
+}
+
+}  // namespace
 
 void initialize_decoder_state(ParakeetImpl& impl,
                               DecoderState& state,
@@ -113,65 +231,12 @@ void finalize_chunk_decoding(ParakeetImpl& impl,
          consecutive_blanks < max_consecutive_blanks &&
          tokens.size() < max_tokens) {
 
-    // Declare tensors for this iteration
-    ov::Tensor decoder_output;
-    ov::Tensor next_hidden;
-    ov::Tensor next_cell;
+    // Run decoder or use cached output
+    auto decoder_out = run_decoder_or_use_cache(impl, state, last_token, hidden_state, cell_state,
+                                                 token_input, targets_et, joint_dec_in, t_decoder_ms);
 
-    // Use cached decoder output if available (optimization)
-    if (state.has_cached_output && last_token == state.last_token.value_or(-1)) {
-      std::memcpy(joint_dec_in.data<float>(), state.cached_decoder_output.data<float>(), joint_dec_in.get_byte_size());
-      next_hidden = hidden_state;
-      next_cell = cell_state;
-
-    } else {
-      // Run decoder inference
-      if (targets_et == ov::element::i64) {
-        token_input.data<int64_t>()[0] = static_cast<int64_t>(last_token);
-      } else {
-        token_input.data<int32_t>()[0] = static_cast<int32_t>(last_token);
-      }
-
-      impl.decoder_request.set_tensor(impl.decoder_model.input("targets"), token_input);
-      impl.decoder_request.set_tensor(impl.decoder_model.input("h_in"), hidden_state);
-      impl.decoder_request.set_tensor(impl.decoder_model.input("c_in"), cell_state);
-
-      auto td0b = std::chrono::steady_clock::now();
-      impl.decoder_request.infer();
-      auto td1b = std::chrono::steady_clock::now();
-      t_decoder_ms += std::chrono::duration<double, std::milli>(td1b - td0b).count();
-
-      // Extract decoder outputs
-      decoder_output = impl.decoder_request.get_output_tensor(0);
-      next_hidden = impl.decoder_request.get_output_tensor(1);
-      next_cell = impl.decoder_request.get_output_tensor(2);
-
-      // Copy decoder output to joint network input
-      std::memcpy(joint_dec_in.data<float>(), decoder_output.data<float>(), decoder_output.get_byte_size());
-
-      // Cache decoder output for potential reuse
-      state.cached_decoder_output = ov::Tensor(ov::element::f32, {1, 1, impl.decoder_hidden_size});
-      std::memcpy(state.cached_decoder_output.data<float>(), decoder_output.data<float>(), decoder_output.get_byte_size());
-      state.has_cached_output = true;
-    }
-
-    // Prepare encoder output for joint network
-    const float* enc = encoder.tensor.data<float>();
-    float* dst = joint_enc_in.data<float>();
-
-    // Bounds check: verify we can read the last channel's last frame
-    const size_t max_offset = (impl.encoder_hidden_size - 1) * encoder.time_steps + last_frame;
-    if (max_offset >= encoder.tensor.get_size()) {
-      throw std::runtime_error("Encoder tensor access out of bounds: offset=" +
-                               std::to_string(max_offset) +
-                               " size=" + std::to_string(encoder.tensor.get_size()));
-    }
-
-    // Copy encoder output for last frame to joint network input
-    for (size_t channel = 0; channel < impl.encoder_hidden_size; ++channel) {
-      const size_t off = channel * encoder.time_steps + last_frame;
-      dst[channel] = enc[off];
-    }
+    // Extract encoder frame for joint network
+    extract_encoder_frame(encoder, last_frame, impl.encoder_hidden_size, joint_enc_in);
 
     // Run joint network inference
     auto tj0b = std::chrono::steady_clock::now();
@@ -183,24 +248,13 @@ void finalize_chunk_decoding(ParakeetImpl& impl,
     const auto logits_tensor = impl.joint_request.get_output_tensor(0);
     const float* logits = logits_tensor.data<float>();
 
-    size_t best_token = 0;
-    float best_token_score = logits[tokens_offset + 0];
-    for (size_t i = 1; i < vocab_size; ++i) {
-      const float score = logits[tokens_offset + i];
-      if (score > best_token_score) {
-        best_token_score = score;
-        best_token = i;
-      }
-    }
+    float best_token_score;
+    size_t best_token = find_best_token(logits, tokens_offset, vocab_size, best_token_score);
 
     // Calculate token confidence (softmax probability)
     float token_confidence = 0.0F;
     if (track_confidence) {
-      float token_sum_exp = 0.0F;
-      for (size_t i = 0; i < vocab_size; ++i) {
-        token_sum_exp += std::exp(logits[tokens_offset + i]);
-      }
-      token_confidence = std::exp(best_token_score) / token_sum_exp;
+      token_confidence = calculate_confidence(logits, tokens_offset, vocab_size, best_token_score);
     }
 
     // Check if best token is blank
@@ -212,8 +266,8 @@ void finalize_chunk_decoding(ParakeetImpl& impl,
       tokens.push_back(token_id);
       timings.push_back({.token_id = token_id, .frame_index = last_frame, .confidence = token_confidence});
 
-      std::memcpy(hidden_state.data<float>(), next_hidden.data<float>(), next_hidden.get_byte_size());
-      std::memcpy(cell_state.data<float>(), next_cell.data<float>(), next_cell.get_byte_size());
+      std::memcpy(hidden_state.data<float>(), decoder_out.next_hidden.data<float>(), decoder_out.next_hidden.get_byte_size());
+      std::memcpy(cell_state.data<float>(), decoder_out.next_cell.data<float>(), decoder_out.next_cell.get_byte_size());
 
       last_token = token_id;
       state.has_cached_output = false;
@@ -315,48 +369,15 @@ DecoderResult run_decoder(ParakeetImpl& impl,
 
   // Outer loop: runs decoder, then enters inner loop for blank processing
   while (frame_index < valid_frames && tokens.size() < options.max_tokens) {
-    // Check if we can use cached decoder output
-    ov::Tensor decoder_output;
-    ov::Tensor next_hidden;
-    ov::Tensor next_cell;
+    // Run decoder or use cached output
+    auto decoder_out = run_decoder_or_use_cache(impl, state, last_token, hidden_state, cell_state,
+                                                 token_input, targets_et, joint_dec_in, t_decoder_ms);
 
-    if (state.has_cached_output && last_token == state.last_token.value_or(-1)) {
-      // CACHE HIT: Reuse cached decoder output - significant speedup!
+    // Track cache statistics
+    if (decoder_out.used_cache) {
       cache_hits++;
-      std::memcpy(joint_dec_in.data<float>(), state.cached_decoder_output.data<float>(), decoder_step.get_byte_size());
-      next_hidden = hidden_state;
-      next_cell = cell_state;
-
     } else {
-      // CACHE MISS: Need to run decoder LSTM
       decoder_runs++;
-
-      if (targets_et == ov::element::i64) {
-        token_input.data<int64_t>()[0] = static_cast<int64_t>(last_token);
-      } else {
-        token_input.data<int32_t>()[0] = static_cast<int32_t>(last_token);
-      }
-
-      impl.decoder_request.set_tensor(impl.decoder_model.input("targets"), token_input);
-      impl.decoder_request.set_tensor(impl.decoder_model.input("h_in"), hidden_state);
-      impl.decoder_request.set_tensor(impl.decoder_model.input("c_in"), cell_state);
-
-      auto td0 = std::chrono::steady_clock::now();
-      impl.decoder_request.infer();
-      auto td1 = std::chrono::steady_clock::now();
-      t_decoder_ms += std::chrono::duration<double, std::milli>(td1 - td0).count();
-
-      decoder_output = impl.decoder_request.get_output_tensor(0);
-      next_hidden = impl.decoder_request.get_output_tensor(1);
-      next_cell = impl.decoder_request.get_output_tensor(2);
-
-      // Store decoder output for joint network
-      std::memcpy(joint_dec_in.data<float>(), decoder_output.data<float>(), decoder_output.get_byte_size());
-
-      // Cache this decoder output for next iteration
-      state.cached_decoder_output = ov::Tensor(ov::element::f32, {1, 1, impl.decoder_hidden_size});
-      std::memcpy(state.cached_decoder_output.data<float>(), decoder_output.data<float>(), decoder_output.get_byte_size());
-      state.has_cached_output = true;
     }
 
     // TDT Inner Loop: Process consecutive blank tokens without re-running decoder
@@ -367,22 +388,7 @@ DecoderResult run_decoder(ParakeetImpl& impl,
       total_joint_calls++;
 
       // Extract encoder frame for current timestep
-      {
-        const float* enc = encoder.tensor.data<float>();
-        float* dst = joint_enc_in.data<float>();
-
-        const size_t max_offset = (impl.encoder_hidden_size - 1) * encoder.time_steps + frame_index;
-        if (max_offset >= encoder.tensor.get_size()) {
-          throw std::runtime_error("Encoder tensor access out of bounds in inner loop: offset=" +
-                                   std::to_string(max_offset) +
-                                   " size=" + std::to_string(encoder.tensor.get_size()));
-        }
-
-        for (size_t channel = 0; channel < impl.encoder_hidden_size; ++channel) {
-          const size_t offset = channel * encoder.time_steps + frame_index;
-          dst[channel] = enc[offset];
-        }
-      }
+      extract_encoder_frame(encoder, frame_index, impl.encoder_hidden_size, joint_enc_in);
 
       // Run joint network with encoder frame + REUSED decoder output
       auto tj0 = std::chrono::steady_clock::now();
@@ -394,24 +400,13 @@ DecoderResult run_decoder(ParakeetImpl& impl,
       const float* logits = logits_tensor.data<float>();
 
       // Find best token within token head region
-      size_t best_token = 0;
-      float best_token_score = logits[tokens_offset + 0];
-      for (size_t i = 1; i < vocab_size; ++i) {
-        const float score = logits[tokens_offset + i];
-        if (score > best_token_score) {
-          best_token_score = score;
-          best_token = i;
-        }
-      }
+      float best_token_score;
+      size_t best_token = find_best_token(logits, tokens_offset, vocab_size, best_token_score);
 
       // Calculate confidence only if requested
       float token_confidence = 0.0F;
       if (track_confidence) {
-        float token_sum_exp = 0.0F;
-        for (size_t i = 0; i < vocab_size; ++i) {
-          token_sum_exp += std::exp(logits[tokens_offset + i]);
-        }
-        token_confidence = std::exp(best_token_score) / token_sum_exp;
+        token_confidence = calculate_confidence(logits, tokens_offset, vocab_size, best_token_score);
       }
 
       // Find best duration
@@ -448,8 +443,8 @@ DecoderResult run_decoder(ParakeetImpl& impl,
         last_token = token_id;
 
         // Update LSTM state with new token's context
-        std::memcpy(hidden_state.data<float>(), next_hidden.data<float>(), next_hidden.get_byte_size());
-        std::memcpy(cell_state.data<float>(), next_cell.data<float>(), next_cell.get_byte_size());
+        std::memcpy(hidden_state.data<float>(), decoder_out.next_hidden.data<float>(), decoder_out.next_hidden.get_byte_size());
+        std::memcpy(cell_state.data<float>(), decoder_out.next_cell.data<float>(), decoder_out.next_cell.get_byte_size());
 
         // Invalidate cache - force decoder run next iteration
         state.has_cached_output = false;

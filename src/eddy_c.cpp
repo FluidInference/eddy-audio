@@ -134,14 +134,29 @@ EddyError eddy_whisper_transcribe_file(
         result->confidence = cpp_result.confidence;
         result->inference_duration_ms = cpp_result.inference_duration_ms;
 
-        // Convert chunks
+        // Convert chunks (exception-safe)
         result->num_chunks = cpp_result.chunks.size();
         if (result->num_chunks > 0) {
             result->chunks = new EddyWhisperChunk[result->num_chunks];
+            // Initialize all text pointers to nullptr for safe cleanup
             for (size_t i = 0; i < result->num_chunks; i++) {
-                result->chunks[i].start_ts = cpp_result.chunks[i].start_ts;
-                result->chunks[i].end_ts = cpp_result.chunks[i].end_ts;
-                result->chunks[i].text = copy_string(cpp_result.chunks[i].text);
+                result->chunks[i].text = nullptr;
+            }
+            try {
+                for (size_t i = 0; i < result->num_chunks; i++) {
+                    result->chunks[i].start_ts = cpp_result.chunks[i].start_ts;
+                    result->chunks[i].end_ts = cpp_result.chunks[i].end_ts;
+                    result->chunks[i].text = copy_string(cpp_result.chunks[i].text);
+                }
+            } catch (...) {
+                // Cleanup partially allocated chunks
+                for (size_t i = 0; i < result->num_chunks; i++) {
+                    if (result->chunks[i].text) delete[] result->chunks[i].text;
+                }
+                delete[] result->chunks;
+                result->chunks = nullptr;
+                result->num_chunks = 0;
+                throw; // Re-throw to be caught by outer handler
             }
         } else {
             result->chunks = nullptr;
@@ -191,14 +206,29 @@ EddyError eddy_whisper_transcribe_buffer(
         result->confidence = cpp_result.confidence;
         result->inference_duration_ms = cpp_result.inference_duration_ms;
 
-        // Convert chunks
+        // Convert chunks (exception-safe)
         result->num_chunks = cpp_result.chunks.size();
         if (result->num_chunks > 0) {
             result->chunks = new EddyWhisperChunk[result->num_chunks];
+            // Initialize all text pointers to nullptr for safe cleanup
             for (size_t i = 0; i < result->num_chunks; i++) {
-                result->chunks[i].start_ts = cpp_result.chunks[i].start_ts;
-                result->chunks[i].end_ts = cpp_result.chunks[i].end_ts;
-                result->chunks[i].text = copy_string(cpp_result.chunks[i].text);
+                result->chunks[i].text = nullptr;
+            }
+            try {
+                for (size_t i = 0; i < result->num_chunks; i++) {
+                    result->chunks[i].start_ts = cpp_result.chunks[i].start_ts;
+                    result->chunks[i].end_ts = cpp_result.chunks[i].end_ts;
+                    result->chunks[i].text = copy_string(cpp_result.chunks[i].text);
+                }
+            } catch (...) {
+                // Cleanup partially allocated chunks
+                for (size_t i = 0; i < result->num_chunks; i++) {
+                    if (result->chunks[i].text) delete[] result->chunks[i].text;
+                }
+                delete[] result->chunks;
+                result->chunks = nullptr;
+                result->num_chunks = 0;
+                throw; // Re-throw to be caught by outer handler
             }
         } else {
             result->chunks = nullptr;
@@ -386,6 +416,10 @@ EDDY_API EddyError eddy_parakeet_infer_file(EddyParakeetModel handle, const char
 }
 
 EDDY_API EddyError eddy_parakeet_infer_buffer(EddyParakeetModel handle, const float* pcm, size_t length, int sample_rate, EddyParakeetResult* out, char** err) {
+    if (!handle) {
+        if (err) *err = copy_string("[Eddy Error] Invalid argument: null handle");
+        return EDDY_ERROR_INVALID_ARGUMENT;
+    }
     auto* h = static_cast<CParakeet*>(handle);
     return parakeet_infer_common(h, pcm, length, sample_rate, out, err);
 }

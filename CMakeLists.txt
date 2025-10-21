@@ -1,8 +1,9 @@
 cmake_minimum_required(VERSION 3.22)
-project(eddy LANGUAGES CXX)
+project(eddy VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # Enable interprocedural optimization (LTO/LTCG) for Release builds
@@ -12,6 +13,9 @@ if(MSVC)
   # Favor fast math and aggressive inlining for Release
   # Use flags string to avoid malformed generator expressions on MSBuild
   string(APPEND CMAKE_CXX_FLAGS_RELEASE " /O2 /Oi /Ot /Ob3 /fp:fast")
+elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  # Equivalent optimization flags for GCC/Clang
+  string(APPEND CMAKE_CXX_FLAGS_RELEASE " -O3 -ffast-math -finline-functions")
 endif()
 
 option(EDDY_ENABLE_WHISPER "Enable Whisper (OpenVINO GenAI) support" OFF)
@@ -81,11 +85,13 @@ endif()
 
 install(TARGETS eddy EXPORT eddyTargets ARCHIVE DESTINATION lib LIBRARY DESTINATION lib RUNTIME DESTINATION bin)
 install(EXPORT eddyTargets FILE eddyTargets.cmake NAMESPACE eddy:: DESTINATION lib/cmake/eddy)
-install(DIRECTORY include/ DESTINATION include)
+install(DIRECTORY include/
+        DESTINATION include
+        PATTERN "detail" EXCLUDE)
 
 include(CMakePackageConfigHelpers)
 write_basic_package_version_file(${CMAKE_CURRENT_BINARY_DIR}/eddyConfigVersion.cmake
-  VERSION 0.1.0
+  VERSION ${PROJECT_VERSION}
   COMPATIBILITY AnyNewerVersion
 )
 configure_file(cmake/eddyConfig.cmake.in ${CMAKE_CURRENT_BINARY_DIR}/eddyConfig.cmake @ONLY)
@@ -95,7 +101,6 @@ if(EDDY_BUILD_EXAMPLES)
   add_subdirectory(examples)
 endif()
 
-# Build C API shim only when Whisper (GenAI) is available to satisfy symbols
 # C API shim (always build; Whisper calls are no-ops unless EDDY_ENABLE_WHISPER)
 add_library(eddy_c SHARED src/eddy_c.cpp)
 target_include_directories(eddy_c
@@ -105,7 +110,11 @@ target_include_directories(eddy_c
 )
 target_link_libraries(eddy_c PRIVATE eddy)
 target_compile_definitions(eddy_c PRIVATE EDDY_BUILD_SHARED=1)
-install(TARGETS eddy_c RUNTIME DESTINATION bin LIBRARY DESTINATION lib ARCHIVE DESTINATION lib)
+install(TARGETS eddy_c
+        EXPORT eddyTargets
+        RUNTIME DESTINATION bin
+        LIBRARY DESTINATION lib
+        ARCHIVE DESTINATION lib)
 
 include(CTest)
 # Only add tests if requested and the folder exists

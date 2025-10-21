@@ -13,12 +13,15 @@ namespace eddy::parakeet {
 // PRIVATE IMPLEMENTATION HEADER - DO NOT INSTALL OR INCLUDE IN PUBLIC API
 //
 // This file contains internal implementation details for OpenVINOParakeet.
-// It is kept in src/ (not include/) to hide implementation from users:
+// It is kept in detail/ to hide implementation from users:
 // - OpenVINO types (ov::CompiledModel, ov::InferRequest)
 // - Internal state management (mutexes, port indices)
 // - Implementation can change without breaking API
 //
 // Only parakeet_*.cpp files should include this header.
+
+// Implementation struct for OpenVINOParakeet (Pimpl idiom)
+// Also used directly by helper functions as ParakeetImpl alias
 struct ParakeetImpl {
   std::shared_ptr<eddy::OpenVINOBackend> backend;
   ModelPaths model_paths;
@@ -54,7 +57,8 @@ struct ParakeetImpl {
   size_t encoder_length_index = 1;   // [1]
 };
 
-// Alias for OpenVINOParakeet::Impl
+// OpenVINOParakeet::Impl simply inherits from ParakeetImpl
+// This satisfies the forward declaration while allowing helper functions to use ParakeetImpl directly
 struct OpenVINOParakeet::Impl : ParakeetImpl {};
 
 }  // namespace eddy::parakeet
