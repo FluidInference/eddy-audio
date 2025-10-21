@@ -11,7 +11,7 @@ Workflow:
 2. Python WER calculation → outputs final_results.json
 
 Usage:
-    python benchmark.py --max-files 2620
+    uv run benchmark.py --max-files 2620
 """
 
 import argparse

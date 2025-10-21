@@ -1,8 +1,8 @@
 [project]
 name = "eddy-benchmark"
 version = "0.1.0"
-description = "LibriSpeech ASR benchmarking for eddy (C++ + Python WER calculation)"
-requires-python = ">=3.9"
+description = "Benchmarking for eddy"
+requires-python = ">=3.10"
 dependencies = [
     "whisper-normalizer>=0.1.0",
     "jiwer>=3.0.0",

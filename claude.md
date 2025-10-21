@@ -3,6 +3,7 @@
 ## Development Best Practices
 
 **Always Build After Code Changes:**
+
 - After modifying any source files, immediately build to verify compilation
 - Don't assume changes are correct without testing
 - Use appropriate build commands for the project (cmake, make, etc.)
@@ -10,6 +11,7 @@
 - Run basic tests after successful builds when applicable
 
 **Build Verification Pattern:**
+
 1. Make code changes
 2. Build the affected targets
 3. Verify build succeeds
@@ -19,6 +21,7 @@
 ## Model Selection Strategy
 
 **When to use Opus 4.1:**
+
 - Complex queries requiring deep analysis and understanding
 - Big code changes involving multiple files or architectural decisions
 - Really hard bugs that require extensive investigation
@@ -26,6 +29,7 @@
 - Architecture comparisons and design decisions
 
 **When to use Sonnet 4.5:**
+
 - Simpler tasks and straightforward implementations
 - Better for execution-focused work
 - Quick fixes and minor modifications
@@ -44,6 +48,7 @@
 The Debug build (`build/examples/cpp/Debug/parakeet_cli.exe`) ran but produced no output, not even help text or error messages.
 
 **Root Cause:**
+
 - Debug builds require debug runtime DLLs: `vcruntime140d.dll`, `msvcp140d.dll`, etc.
 - These DLLs only exist if Visual Studio is installed
 - Without them, Windows fails to load the executable before `main()` even starts
@@ -51,6 +56,7 @@ The Debug build (`build/examples/cpp/Debug/parakeet_cli.exe`) ran but produced n
 
 **Solution:**
 Use Release build instead:
+
 ```bash
 cmake --build build --config Release --target parakeet_cli
 ```
@@ -73,11 +79,13 @@ When distributing or testing C++ applications on Windows, always use Release bui
 ## Model Loading Strategy
 
 The CLI now uses a cache-first approach:
+
 1. Checks `%LOCALAPPDATA%\eddy\cache\models\parakeet-v2\files\` for model files
 2. Falls back to `models/parakeet/` if not found in cache
 3. OpenVINO compiled model cache stored in `%LOCALAPPDATA%\eddy\cache\models\parakeet-v2\`
 
 To install models to cache:
+
 ```bash
 mkdir -p ~/AppData/Local/eddy/cache/models/parakeet-v2/files
 cp models/parakeet/* ~/AppData/Local/eddy/cache/models/parakeet-v2/files/
@@ -86,6 +94,7 @@ cp models/parakeet/* ~/AppData/Local/eddy/cache/models/parakeet-v2/files/
 ## Performance
 
 Tested on CPU (Intel):
+
 - 10s audio: 7.8x real-time (1275ms processing)
 - 15s audio: 5.6x real-time (2664ms processing)
 - Chunking works correctly for long audio (>10 seconds)
@@ -95,6 +104,7 @@ Tested on CPU (Intel):
 **Problem:** Long audio (>10s) is processed in overlapping chunks. The decoder LSTM state resets between chunks, causing duplicate tokens to appear at different positions in the overlap region.
 
 **Initial Symptom:** 10.2% average WER with duplicate phrases in output:
+
 ```
 "...and thus her gentle lamentation. Is heard, and thus her gentle lamentation falls..."
 ```
@@ -102,6 +112,7 @@ Tested on CPU (Intel):
 **Root Cause:** Original algorithm only checked if the **last N tokens** of previous chunk matched the beginning of current chunk. But duplicates could appear anywhere in the tail/head overlap regions due to state reset.
 
 **Solution:** Implemented comprehensive 2D search that checks:
+
 - Last 20 tokens of previous chunk
 - First 15 tokens of current chunk
 - All possible subsequence matches between these regions
@@ -110,6 +121,7 @@ Tested on CPU (Intel):
 **Result:** Average WER improved from 10.2% to **1.27%** - better than FluidAudio v2's expected 2.2%!
 
 LibriSpeech test-clean benchmark (5 files):
+
 - Average WER: 1.27%
 - Median WER: 0.00% (3/5 files perfect)
 - Remaining errors are just spelling variants of proper nouns
@@ -192,6 +204,7 @@ We are currently focused on **batch processing of complete audio files** with ch
 ### Future: Streaming Support
 
 When we eventually need streaming:
+
 1. Implement `timeJump` tracking for frame positioning
 2. Add circular audio buffer
 3. Implement incremental result emission
@@ -220,6 +233,7 @@ Successfully added FluidAudio-parity features for token-level timing and confide
 ### Implementation Details
 
 **Data Structures:**
+
 ```cpp
 struct TokenTiming {
     int token_id;           // Vocabulary index
@@ -236,6 +250,7 @@ struct InferenceResult {
 ```
 
 **Key Changes:**
+
 - Modified `run_greedy_decoder` to return both tokens and timings
 - Applied softmax to joint network logits for proper confidence scores
 - Preserved timings across chunk deduplication
@@ -264,11 +279,13 @@ Token Timings (first 10):
 Comprehensive testing confirms the implementation works correctly:
 
 #### LibriSpeech Benchmark (5 files)
+
 - **WER:** 1.27% (no regression from previous results)
 - **Median WER:** 0.00% (3/5 files perfect transcription)
 - **Overall RTFx:** 5.0x on CPU
 
 #### Test Case: `assets/audio/first_15s.wav` (15.01 seconds)
+
 ```
 Transcription: "Previously on Bear Brook. Here lies the mortal remains,
                known only to God, of a woman aged23 to33 and a girl child."
@@ -288,6 +305,7 @@ Token Timings (sample):
 ```
 
 #### Quality Checks - All Passed ✅
+
 - ✅ WER unchanged (1.27% maintained)
 - ✅ Timestamps align with audio frames
 - ✅ Confidence scores valid (57-100% range, properly calculated via softmax)
@@ -298,6 +316,7 @@ Token Timings (sample):
 ### How to Test It Yourself
 
 **Build and run:**
+
 ```bash
 # Build and run in one command
 cmake --build build --config Release --target parakeet_cli && build/examples/cpp/Release/parakeet_cli.exe "assets/audio/first_15s.wav"
@@ -308,6 +327,7 @@ build/examples/cpp/Release/parakeet_cli.exe "assets/audio/first_15s.wav"
 ```
 
 **Test with your own audio:**
+
 ```bash
 # Audio must be 16kHz mono/stereo WAV
 build/examples/cpp/Release/parakeet_cli.exe "path/to/your/audio.wav"
@@ -317,6 +337,7 @@ ffmpeg -i input.flac -ar 16000 -ac 1 output.wav
 ```
 
 **Expected output:**
+
 - Transcription text
 - Overall confidence percentage
 - First 10 token timings with timestamps and per-token confidence
@@ -357,15 +378,18 @@ python benchmark_librispeech.py --max-files all
 ### Current Results
 
 **Small Test (5 files):**
+
 - Average WER: 1.27%
 - Overall RTFx: 2.1x
 
 **Medium Test (50 files):**
+
 - Average WER: 3.65%
 - Median WER: 0.00%
 - Overall RTFx: 1.9x
 
 **FluidAudio v2 Baseline (for comparison):**
+
 - Average WER: 2.2%
 - Overall RTFx: 141x (on M4 Pro with Apple Neural Engine)
 
@@ -383,11 +407,13 @@ Created a high-performance C++ benchmark that is **2.5x faster** than the Python
 ### Why C++ Benchmark?
 
 The Python version spawned `parakeet_cli.exe` for each file, incurring:
+
 - Subprocess overhead (~50ms per file)
 - Model loading/initialization per file
 - Text parsing from CLI output
 
 The C++ version:
+
 - Loads model **once** and reuses it for all 2620 files
 - Direct library API calls (no subprocess)
 - Direct access to results (no parsing)
@@ -395,11 +421,13 @@ The C++ version:
 ### Performance Improvement
 
 **5-file benchmark comparison:**
+
 - Python: 27.5s total processing
 - C++ Native: 10.9s total processing
 - **Speedup: 2.5x faster** ✨
 
 **Full benchmark (2620 files) projection:**
+
 - Python: ~2 hours
 - C++ Native: **~48 minutes** (saves 1+ hour!)
 
@@ -432,17 +460,20 @@ build/examples/cpp/Release/benchmark_librispeech.exe --max-files all
 Added automatic LibriSpeech dataset download to C++ benchmark - **no Python dependency**!
 
 **Why?**
+
 - Originally relied on Python script to download dataset
 - Unnecessary dependency for a C++ project
 - User correctly challenged: "why do we need python to do this?"
 
 **Implementation:**
+
 - Uses `curl` for download (built into Windows 10+, Unix)
 - Uses `tar` for extraction (built into Windows 10+, Unix)
 - Automatic detection of existing dataset
 - Downloads ~350MB on first run, caches for future runs
 
 **Result:**
+
 - 100% C++ from start to finish
 - No Python, no subprocess overhead (except standard tools)
 - Truly standalone benchmark
@@ -473,6 +504,7 @@ Uses a sliding window approach with left/center/right context:
 ```
 
 **Benefits:**
+
 - ✅ Real-time transcription as audio arrives
 - ✅ Context on both sides improves accuracy
 - ✅ LSTM state continuity across windows
@@ -482,6 +514,7 @@ Uses a sliding window approach with left/center/right context:
 ### Architecture
 
 **Key Components:**
+
 1. **BufferedStreamingConfig** - Configurable chunk/buffer sizes
 2. **BufferedStreamingASR** - Main streaming class
 3. **Sliding window** - Audio buffer with deque for efficient operations
@@ -514,12 +547,14 @@ std::cout << "Final: " << final.text << std::endl;
 ### Test Results
 
 **Tested on 15-second audio (first_15s.wav):**
+
 - Processing time: 2.5 seconds
 - Real-time factor: 5.9x
 - Chunks processed: 16 (1-second simulated chunks)
 - Overlap detection: Working (found 11 overlapping tokens)
 
 **Output:**
+
 ```
 [PARTIAL] Previously on Bearbrook. Here lies the mortal remains known only.
 [FINAL] Here lies the mortal remains, known only to God, of a woman aged twenty-three to thirty-three and a girl child.

@@ -3,16 +3,19 @@
 eddy is a C++ inference library designed for native runtimes and multi-vendor edge NPUs, exposing a consistent C++ API plus language bindings for app developers (C#; more to follow). The current milestone focuses on the OpenVINO 2025.x backend for the Parakeet-TDT speech model family while we bring additional runtimes online.
 
 ## Platform Support
+
 - Supported: Windows and Linux.
 - Not supported: Apple platforms (macOS/iOS). For Apple, use FluidAudio (FA).
 
 ## Repository Layout
+
 - `include/` – public headers for the runtime, backend abstractions, and model bridges.
 - `src/` – backend/runtime implementations and model-specific glue code.
 - `docs/` – design notes and usage guides.
 - `benchmarks/` – Python scripts for LibriSpeech ASR benchmarking (see [benchmarks/README.md](benchmarks/README.md)).
 
 ## Building
+
 ```
 cmake -S . -B build -DOpenVINO_DIR=/opt/intel/openvino/runtime/cmake
 cmake --build build
@@ -21,23 +24,27 @@ cmake --build build
 The build emits the static target `eddy` with OpenVINO linked in when `EDDY_ENABLE_OPENVINO=ON` (default).
 
 Optional Whisper (OpenVINO GenAI) support is disabled by default. Enable with:
+
 ```
 cmake -S . -B build -DEDDY_ENABLE_OPENVINO=ON -DEDDY_ENABLE_WHISPER=ON -DOpenVINOGenAI_DIR="<path-to-genai-cmake>"
 ```
 
 ## Models (auto-download on first run)
+
 Models will automatically download from `FluidInference/parakeet-tdt-0.6b-v2-ov` on first use.
 
 Cached at: `%LOCALAPPDATA%\eddy\models\parakeet-v2\files\`
 
-Manual download: Run `hf_fetch_models.exe` or visit https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v2-ov
+Manual download: Run `hf_fetch_models.exe` or visit <https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v2-ov>
 
 To disable auto-download: set `EDDY_DISABLE_AUTO_FETCH=1`
 
 ## Parakeet OpenVINO Prototype
+
 Refer to `docs/parakeet_openvino.md` for instructions on pulling the exported model from Hugging Face and running a smoke test through the new `OpenVINOParakeet` wrapper.
 
 ## Roadmap Snapshot
+
 - Flesh out Parakeet preprocessing (feature pipeline, tokenizer, decoder).
 - Add telemetry and zero-copy buffers per backend.
 - Introduce unit and integration tests (GoogleTest) with small audio fixtures.

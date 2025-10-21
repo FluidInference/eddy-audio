@@ -1,8 +1,8 @@
-## Benchmark Run Guide and Troubleshooting (NPU/CPU)
+# Run Guide and Troubleshooting (NPU/CPU)
 
 This doc captures the practical gotchas we hit while running the C++ benchmark and how to avoid them next time.
 
-### Quick Start (NPU)
+## Quick Start (NPU)
 
 - Recommended wrapper (ensures OpenVINO env is loaded):
   - `./run_bench_npu.bat --max-files 100 --device NPU`

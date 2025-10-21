@@ -6,10 +6,6 @@ cmake-build-*/
 models/**/*.bin
 models/**/*.blob
 
-# Keep structure files
-!models/**/*.xml
-!models/**/*.json
-!models/**/README.md
 
 # IDE
 .vscode/

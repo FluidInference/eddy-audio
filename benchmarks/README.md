@@ -14,10 +14,10 @@ cmake --build build --config Release --target benchmark_librispeech
 cd benchmarks
 
 # Install Python dependencies
-uv pip install whisper-normalizer jiwer
+uv sync
 
 # Run benchmark
-python benchmark.py --max-files 25
+uv run benchmark.py --max-files 25
 ```
 
 ---
