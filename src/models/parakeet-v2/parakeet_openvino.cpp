@@ -168,8 +168,8 @@ void OpenVINOParakeet::ensure_compiled_model() {
     const std::string device = impl_->runtime_cfg.device.empty() ? "AUTO" : impl_->runtime_cfg.device;
     const bool target_npu = (device == "NPU");
 
-    // Preprocessor device selection (override via EDDY_PREPROC_DEVICE)
-    std::string preproc_device = target_npu ? std::string("CPU") : device;
+    // Melspectogram has to run on CPU
+    std::string preproc_device = std::string("CPU");
     if (const char* env_pre = std::getenv("EDDY_PREPROC_DEVICE")) {
       if (*env_pre) preproc_device = env_pre;
     }
