@@ -4,6 +4,7 @@
 #include "eddy/models/parakeet-v2/parakeet_encoder.hpp"
 #include "eddy/models/parakeet-v2/parakeet_decoder.hpp"
 #include "eddy/models/parakeet-v2/parakeet_chunking.hpp"
+#include "eddy/utils/openvino_utils.hpp"
 
 #include <openvino/openvino.hpp>
 
@@ -27,70 +28,19 @@ namespace eddy::parakeet {
 
 namespace {
 
-ov::AnyMap make_compile_cfg_from_env() {
-  ov::AnyMap cfg;
-  if (const char* perf = std::getenv("EDDY_OV_PERF")) {
-    std::string v(perf);
-    for (auto& c : v) c = static_cast<char>(::toupper(c));
-    if (v == "LATENCY") cfg[ov::hint::performance_mode.name()] = ov::hint::PerformanceMode::LATENCY;
-    else if (v == "THROUGHPUT") cfg[ov::hint::performance_mode.name()] = ov::hint::PerformanceMode::THROUGHPUT;
-  }
-  if (const char* nr = std::getenv("EDDY_OV_NUM_REQUESTS")) {
-    try {
-      int n = std::max(1, std::stoi(nr));
-      cfg[ov::hint::num_requests.name()] = n;
-    } catch (const std::exception& e) {
-      std::cerr << "[WARN] Invalid EDDY_OV_NUM_REQUESTS value '" << nr << "', using default\n";
-    }
-  }
-  if (const char* th = std::getenv("EDDY_OV_THREADS")) {
-    try {
-      int n = std::max(1, std::stoi(th));
-      cfg[ov::inference_num_threads.name()] = n;
-    } catch (const std::exception& e) {
-      std::cerr << "[WARN] Invalid EDDY_OV_THREADS value '" << th << "', using default\n";
-    }
-  }
-  // Removed precision hint: rely on device defaults and model precision.
-  return cfg;
-}
-
-ov::CompiledModel compile_component(ov::Core& core, const ModelFile& file, const std::string& device) {
-  if (file.path.empty()) {
-    throw std::invalid_argument("Parakeet component path is empty");
-  }
-
-  auto cfg = make_compile_cfg_from_env();
-
-  if (file.compiled) {
-    std::ifstream blob_stream(file.path, std::ios::binary);
-    if (!blob_stream.good()) {
-      throw std::runtime_error("Failed to open compiled blob: " + file.path);
-    }
-    if (!cfg.empty()) return core.import_model(blob_stream, device, cfg);
-    return core.import_model(blob_stream, device);
-  }
-
-  if (!cfg.empty()) return core.compile_model(file.path, device, cfg);
-  return core.compile_model(file.path, device);
-}
-
-
-size_t required_length(const ov::Output<const ov::Node>& port) {
-  const auto shape = port.get_partial_shape();
-  if (shape.rank().is_static() && shape.rank().get_length() >= 3) {
-    const auto len = shape[shape.size() - 1];
-    if (len.is_static()) {
-      return static_cast<size_t>(len.get_length());
-    }
-  }
-  const auto static_shape = port.get_shape();
-  return static_shape.empty() ? 0U : static_shape.back();
-}
-
 struct ChunkPipelineResult {
   std::vector<int> tokens;
   std::vector<TokenTiming> timings;
+  double encoder_ms;
+  double decoder_ms;
+  double joint_ms;
+};
+
+struct MelProcessingResult {
+  std::vector<int> token_ids;
+  std::vector<TokenTiming> all_timings;
+  std::vector<size_t> chunk_sizes_frames;
+  std::vector<InferenceResult::ChunkInfo> chunk_logs;
   double encoder_ms;
   double decoder_ms;
   double joint_ms;
@@ -243,6 +193,85 @@ void process_subsequent_chunk(
   }
 }
 
+// Process mel features - handles both single chunk and multi-chunk (long audio) cases
+MelProcessingResult process_mel_features(
+    OpenVINOParakeet::Impl& impl,
+    const MelFeatures& mel,
+    const SegmentOptions& options,
+    size_t max_frames) {
+
+  MelProcessingResult result;
+
+  if (mel.frames <= max_frames) {
+    // Short audio - process in single chunk
+    DecoderState state;
+    auto pipeline_result = run_chunk_pipeline(impl, mel, options, state, /*is_last_chunk=*/true);
+
+    result.encoder_ms = pipeline_result.encoder_ms;
+    result.decoder_ms = pipeline_result.decoder_ms;
+    result.joint_ms = pipeline_result.joint_ms;
+    result.token_ids = std::move(pipeline_result.tokens);
+    result.all_timings = std::move(pipeline_result.timings);
+    result.chunk_sizes_frames.push_back(mel.frames);
+  } else {
+    // Long audio - process in overlapping chunks
+    const size_t overlap_frames = std::min<size_t>(
+        max_frames > 1 ? max_frames - 1 : 1,
+        std::max<size_t>(4, max_frames / 9));
+    const size_t stride = max_frames - overlap_frames;
+
+    DecoderState decoder_state;
+    size_t offset = 0;
+    size_t chunk_idx = 0;
+    size_t last_emitted_global_frame = 0;
+    bool have_last_emitted_frame = false;
+
+    while (offset < mel.frames) {
+      const size_t chunk_size = std::min(max_frames, mel.frames - offset);
+      const bool is_last_chunk = (offset + chunk_size >= mel.frames);
+      result.chunk_sizes_frames.push_back(chunk_size);
+
+      // Extract and process chunk
+      MelFeatures chunk = extract_mel_chunk(mel, offset, chunk_size);
+      auto pipeline_result = run_chunk_pipeline(impl, chunk, options, decoder_state, is_last_chunk);
+
+      result.encoder_ms += pipeline_result.encoder_ms;
+      result.decoder_ms += pipeline_result.decoder_ms;
+      result.joint_ms += pipeline_result.joint_ms;
+
+      // Prepare chunk info
+      InferenceResult::ChunkInfo ci;
+      ci.index = chunk_idx;
+      ci.offset_frames = offset;
+      ci.size_frames = chunk_size;
+      ci.is_last = is_last_chunk;
+      ci.tokens_predicted = pipeline_result.tokens.size();
+
+      // Process chunk based on whether it's first or subsequent
+      if (chunk_idx == 0) {
+        process_first_chunk(impl, pipeline_result.tokens, pipeline_result.timings, offset,
+                            result.token_ids, result.all_timings, last_emitted_global_frame,
+                            have_last_emitted_frame, ci);
+      } else {
+        process_subsequent_chunk(impl, pipeline_result.tokens, pipeline_result.timings,
+                                 offset, chunk_size, overlap_frames, is_last_chunk,
+                                 result.token_ids, result.all_timings, last_emitted_global_frame,
+                                 have_last_emitted_frame, ci);
+      }
+
+      result.chunk_logs.push_back(ci);
+      chunk_idx++;
+
+      if (offset + chunk_size >= mel.frames) {
+        break;
+      }
+
+      offset += stride;
+    }
+  }
+
+  return result;
+}
 
 }  // namespace
 
@@ -339,98 +368,69 @@ void OpenVINOParakeet::ensure_compiled_model() {
     impl_->tokenizer.load(impl_->model_paths.tokenizer_json, impl_->runtime_cfg.blank_token_id);
 
     // ========================================
-    // Load metadata (optional port name overrides)
+    // Resolve encoder ports by name (Parakeet model has fixed port names)
     // ========================================
     try {
-      const std::filesystem::path enc_path = impl_->model_paths.encoder.path;
-      const std::filesystem::path model_dir = std::filesystem::path(enc_path).parent_path();
-      const std::filesystem::path meta_path = model_dir / "parakeet_metadata.json";
-
-      if (std::filesystem::exists(meta_path)) {
-        std::ifstream meta_stream(meta_path);
-        nlohmann::json meta_json;
-        meta_stream >> meta_json;
-
-        if (meta_json.contains("encoder")) {
-          const auto& enc = meta_json["encoder"];
-          if (enc.contains("mel_input")) impl_->enc_mel_name = enc["mel_input"].get<std::string>();
-          if (enc.contains("length_input")) impl_->enc_len_name = enc["length_input"].get<std::string>();
-          if (enc.contains("output")) impl_->enc_out_name = enc["output"].get<std::string>();
-          if (enc.contains("length_output")) impl_->enc_len_out_name = enc["length_output"].get<std::string>();
-        }
-      }
+      impl_->encoder_ports.mel_in = impl_->encoder_model.input("melspectogram");
     } catch (...) {
-      // Ignore metadata errors and continue with defaults
-    }
-
-    // ========================================
-    // Resolve encoder ports by name
-    // ========================================
-    try {
-      impl_->encoder_ports.mel_in = impl_->encoder_model.input(impl_->enc_mel_name);
-    } catch (...) {
-      throw std::runtime_error(std::string("Missing encoder mel input port: ") + impl_->enc_mel_name);
+      throw std::runtime_error("Missing encoder mel input port: melspectogram");
     }
 
     try {
-      impl_->encoder_ports.len_in = impl_->encoder_model.input(impl_->enc_len_name);
+      impl_->encoder_ports.len_in = impl_->encoder_model.input("melspectogram_length");
     } catch (...) {
-      throw std::runtime_error(std::string("Missing encoder length input port: ") + impl_->enc_len_name);
+      throw std::runtime_error("Missing encoder length input port: melspectogram_length");
     }
 
     try {
-      impl_->encoder_ports.enc_out = impl_->encoder_model.output(impl_->enc_out_name);
+      impl_->encoder_ports.enc_out = impl_->encoder_model.output("encoder_output");
     } catch (...) {
-      throw std::runtime_error(std::string("Missing encoder output port: ") + impl_->enc_out_name);
+      throw std::runtime_error("Missing encoder output port: encoder_output");
     }
 
-    impl_->encoder_expected_frames = required_length(impl_->encoder_ports.mel_in.value());
+    // Get expected frame count from mel input shape
+    {
+      const auto mel_shape = impl_->encoder_ports.mel_in.value().get_shape();
+      impl_->encoder_expected_frames = mel_shape.empty() ? 0U : mel_shape.back();
+    }
 
     // ========================================
     // Determine encoder output indices
     // ========================================
-    const auto outs = impl_->encoder_model.outputs();
-    bool found_output = false;
-    bool found_len = false;
+    try {
+      const auto enc_out = impl_->encoder_model.output("encoder_output");
+      const auto outs = impl_->encoder_model.outputs();
 
-    for (size_t i = 0; i < outs.size(); ++i) {
-      const auto& p = outs[i];
-
-      // Check for main output port
-      try {
-        const auto named_out = impl_->encoder_model.output(impl_->enc_out_name);
-        if (p == named_out) {
+      for (size_t i = 0; i < outs.size(); ++i) {
+        if (outs[i] == enc_out) {
           impl_->encoder_output_index = i;
 
-          const auto shape = p.get_shape();
+          const auto shape = enc_out.get_shape();
           if (shape.size() >= 2 && shape[1] == 0) {
             throw std::runtime_error("Encoder hidden size is zero");
           }
           if (shape.size() >= 2) {
             impl_->encoder_hidden_size = shape[1];
           }
-
-          found_output = true;
+          break;
         }
-      } catch (...) {}
-
-      // Check for length output port
-      if (!found_len) {
-        try {
-          const auto named_len = impl_->encoder_model.output(impl_->enc_len_out_name);
-          if (p == named_len) {
-            impl_->encoder_length_index = i;
-            found_len = true;
-          }
-        } catch (...) {}
       }
+    } catch (const std::exception& e) {
+      throw std::runtime_error(std::string("Failed to locate encoder output: encoder_output - ") + e.what());
     }
 
-    if (!found_output) {
-      throw std::runtime_error(std::string("Failed to locate encoder output: ") + impl_->enc_out_name);
-    }
-    if (!found_len) {
-      throw std::runtime_error(std::string("Failed to locate encoder length output: ") + impl_->enc_len_out_name);
+    try {
+      const auto enc_len = impl_->encoder_model.output("encoder_output_length");
+      const auto outs = impl_->encoder_model.outputs();
+
+      for (size_t i = 0; i < outs.size(); ++i) {
+        if (outs[i] == enc_len) {
+          impl_->encoder_length_index = i;
+          break;
+        }
+      }
+    } catch (const std::exception& e) {
+      throw std::runtime_error(std::string("Failed to locate encoder length output: encoder_output_length - ") + e.what());
     }
 
     // ========================================
@@ -477,10 +477,7 @@ InferenceResult OpenVINOParakeet::infer(const AudioSegment& segment, const Segme
   double t_decoder_ms = 0.0;
   double t_joint_ms = 0.0;
 
-  std::vector<int> token_ids;
-  std::vector<TokenTiming> all_timings;
-  std::vector<size_t> chunk_sizes_frames;  // for result metadata
-  std::vector<InferenceResult::ChunkInfo> chunk_logs;
+  MelProcessingResult mel_result;
   {
     std::lock_guard<std::mutex> lock(impl_->request_guard);
     auto t0 = std::chrono::steady_clock::now();
@@ -488,85 +485,12 @@ InferenceResult OpenVINOParakeet::infer(const AudioSegment& segment, const Segme
     auto t1 = std::chrono::steady_clock::now();
     t_preproc_ms += std::chrono::duration<double, std::milli>(t1 - t0).count();
 
-    // Check if audio is longer than encoder can handle
-    const size_t max_frames = impl_->encoder_expected_frames;
-
-    if (mel.frames <= max_frames) {
-      // Short audio - process in single chunk
-      DecoderState state;
-      auto result = run_chunk_pipeline(*impl_, mel, options, state, /*is_last_chunk=*/true);
-
-      t_encoder_ms += result.encoder_ms;
-      t_decoder_ms += result.decoder_ms;
-      t_joint_ms += result.joint_ms;
-      token_ids = std::move(result.tokens);
-      all_timings = std::move(result.timings);
-
-      chunk_sizes_frames.push_back(mel.frames);
-    } else {
-      // Long audio - process in overlapping chunks
-      // Use overlap to avoid losing audio at boundaries
-      // FluidAudio uses ~20 frames (~1.6s) when max window ~180 frames (~14.4s)
-      // Choose a proportional overlap (~1/9 of max_frames) with sane bounds
-      const size_t overlap_frames = std::min<size_t>(
-          max_frames > 1 ? max_frames - 1 : 1,
-          std::max<size_t>(4, max_frames / 9));
-      const size_t stride = max_frames - overlap_frames;
-
-      // Persistent decoder state across chunks for full state continuity
-      DecoderState decoder_state;
-
-      size_t offset = 0;
-      size_t chunk_idx = 0;
-      // Track the last emitted token's global encoder frame index to enforce monotonic time
-      size_t last_emitted_global_frame = 0;
-      bool have_last_emitted_frame = false;
-
-      while (offset < mel.frames) {
-        const size_t chunk_size = std::min(max_frames, mel.frames - offset);
-        const bool is_last_chunk = (offset + chunk_size >= mel.frames);
-        chunk_sizes_frames.push_back(chunk_size);
-
-        // Extract mel chunk
-        MelFeatures chunk = extract_mel_chunk(mel, offset, chunk_size);
-
-        // Run pipeline on chunk
-        auto pipeline_result = run_chunk_pipeline(*impl_, chunk, options, decoder_state, is_last_chunk);
-        t_encoder_ms += pipeline_result.encoder_ms;
-        t_decoder_ms += pipeline_result.decoder_ms;
-        t_joint_ms += pipeline_result.joint_ms;
-
-        // Prepare chunk info
-        InferenceResult::ChunkInfo ci;
-        ci.index = chunk_idx;
-        ci.offset_frames = offset;
-        ci.size_frames = chunk_size;
-        ci.is_last = is_last_chunk;
-        ci.tokens_predicted = pipeline_result.tokens.size();
-
-        // Process chunk based on whether it's first or subsequent
-        if (chunk_idx == 0) {
-          process_first_chunk(*impl_, pipeline_result.tokens, pipeline_result.timings, offset,
-                              token_ids, all_timings, last_emitted_global_frame,
-                              have_last_emitted_frame, ci);
-        } else {
-          process_subsequent_chunk(*impl_, pipeline_result.tokens, pipeline_result.timings,
-                                   offset, chunk_size, overlap_frames, is_last_chunk,
-                                   token_ids, all_timings, last_emitted_global_frame,
-                                   have_last_emitted_frame, ci);
-        }
-
-        chunk_logs.push_back(ci);
-        chunk_idx++;
-
-        if (offset + chunk_size >= mel.frames) {
-          break;
-        }
-
-        offset += stride;
-      }
-    }
+    mel_result = process_mel_features(*impl_, mel, options, impl_->encoder_expected_frames);
   }
+
+  t_encoder_ms = mel_result.encoder_ms;
+  t_decoder_ms = mel_result.decoder_ms;
+  t_joint_ms = mel_result.joint_ms;
 
   const auto end = std::chrono::steady_clock::now();
   const auto latency_ms = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(end - start).count();
@@ -574,12 +498,12 @@ InferenceResult OpenVINOParakeet::infer(const AudioSegment& segment, const Segme
   const double other_ms = latency_ms > known_ms ? (latency_ms - known_ms) : 0.0;
 
   InferenceResult result;
-  result.token_ids = std::move(token_ids);
+  result.token_ids = std::move(mel_result.token_ids);
   result.text = impl_->tokenizer.decode(result.token_ids);
   result.latency_ms = latency_ms;
-  result.token_timings = std::move(all_timings);
-  result.chunk_sizes_frames = std::move(chunk_sizes_frames);
-  result.chunks = std::move(chunk_logs);
+  result.token_timings = std::move(mel_result.all_timings);
+  result.chunk_sizes_frames = std::move(mel_result.chunk_sizes_frames);
+  result.chunks = std::move(mel_result.chunk_logs);
 
   // Calculate overall confidence (average of token confidences)
   if (!result.token_timings.empty()) {

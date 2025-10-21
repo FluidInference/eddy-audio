@@ -33,7 +33,7 @@ std::filesystem::path get_app_data_dir() {
     throw std::runtime_error("Failed to get Windows LocalAppData directory: both API and environment variable failed");
 
 #else
-    // Linux/Unix: Use XDG_CACHE_HOME or ~/.cache
+    // Linux/Unix: Use XDG_CACHE_HOME or ~/.cache for app data
     const char* xdg_cache = std::getenv("XDG_CACHE_HOME");
     if (xdg_cache != nullptr) {
         return std::filesystem::path(xdg_cache) / "eddy";
@@ -41,7 +41,7 @@ std::filesystem::path get_app_data_dir() {
 
     const char* home = std::getenv("HOME");
     if (home == nullptr) {
-        throw std::runtime_error("Failed to get cache directory: both XDG_CACHE_HOME and HOME are unavailable");
+        throw std::runtime_error("Failed to get app data directory: both XDG_CACHE_HOME and HOME are unavailable");
     }
     return std::filesystem::path(home) / ".cache" / "eddy";
 #endif
@@ -64,7 +64,7 @@ std::filesystem::path get_cache_dir() { return get_app_data_dir(); }
 std::filesystem::path get_model_cache_dir(const std::string& model_name) { return get_model_dir(model_name); }
 std::filesystem::path get_model_files_dir(const std::string& model_name) { return get_model_assets_dir(model_name); }
 
-bool ensure_cache_dir(const std::filesystem::path& path) {
+bool ensure_directory(const std::filesystem::path& path) {
     std::error_code ec;
 
     if (std::filesystem::exists(path, ec)) {

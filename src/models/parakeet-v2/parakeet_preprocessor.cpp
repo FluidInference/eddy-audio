@@ -35,14 +35,19 @@ MelFeatures run_preprocessor(ParakeetImpl& impl, const AudioSegment& segment) {
 
   // Get preprocessor input window size (Parakeet mel spec model requires exactly 160000 samples = 10s)
   // Long audio (>10s) is processed in overlapping windows and mel outputs are concatenated.
-  const auto pshape = impl.preproc_model.input(0).get_partial_shape();
-  const auto len_dim = pshape[1];
-
-  if (!len_dim.is_static()) {
-    throw std::runtime_error("Parakeet preprocessor model must have static input shape");
+  size_t window_samples = 160000;  // Default for Parakeet v2
+  try {
+    const auto pshape = impl.preproc_model.input(0).get_partial_shape();
+    if (pshape.rank().is_static() && pshape.rank().get_length() >= 2) {
+      const auto len_dim = pshape[1];
+      if (len_dim.is_static()) {
+        window_samples = static_cast<size_t>(len_dim.get_length());
+      }
+    }
+  } catch (...) {
+    // Use default window size
   }
 
-  const size_t window_samples = static_cast<size_t>(len_dim.get_length());
   if (window_samples == 0) {
     throw std::runtime_error("Parakeet preprocessor window size cannot be zero");
   }

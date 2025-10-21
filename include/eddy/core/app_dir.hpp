@@ -19,6 +19,6 @@ std::filesystem::path get_cache_dir();
 std::filesystem::path get_model_cache_dir(const std::string& model_name);
 std::filesystem::path get_model_files_dir(const std::string& model_name);
 
-bool ensure_cache_dir(const std::filesystem::path& path);
+bool ensure_directory(const std::filesystem::path& path);
 
 }  // namespace eddy

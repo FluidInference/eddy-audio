@@ -52,12 +52,6 @@ struct ParakeetImpl {
   // Output indices for encoder outputs (robust retrieval)
   size_t encoder_output_index = 0;   // [1, hidden, time]
   size_t encoder_length_index = 1;   // [1]
-
-  // Preferred port names (configurable via metadata JSON)
-  std::string enc_mel_name = "melspectogram";
-  std::string enc_len_name = "melspectogram_length";
-  std::string enc_out_name = "encoder_output";
-  std::string enc_len_out_name = "encoder_output_length";
 };
 
 // Alias for OpenVINOParakeet::Impl

@@ -81,7 +81,7 @@ std::vector<float> read_wav(const std::string& filename) {
 }
 
 // Convert in-memory PCM16 buffer to float32 mono
-// Note: For file I/O, use read_wav() which leverages libsndfile
+// Uses libsndfile's normalization constants for consistency with read_wav()
 std::vector<float> pcm16_to_float32(const int16_t* data, size_t size, int channels) {
     if (channels != 1 && channels != 2) {
         throw std::runtime_error("Only mono or stereo audio supported");
@@ -90,15 +90,21 @@ std::vector<float> pcm16_to_float32(const int16_t* data, size_t size, int channe
     const size_t num_frames = size / channels;
     std::vector<float> pcmf32(num_frames);
 
+    // Use the same normalization factor as libsndfile (SF_FORMAT_PCM_16 -> float)
+    // libsndfile normalizes int16 to [-1.0, 1.0] range using division by 32768.0
+    constexpr float scale = 1.0f / 32768.0f;
+
     if (channels == 1) {
         // Mono: direct conversion
         for (size_t i = 0; i < num_frames; i++) {
-            pcmf32[i] = static_cast<float>(data[i]) / 32768.0f;
+            pcmf32[i] = static_cast<float>(data[i]) * scale;
         }
     } else {
-        // Stereo: average both channels
+        // Stereo: average both channels (consistent with read_wav stereo mixing)
         for (size_t i = 0; i < num_frames; i++) {
-            pcmf32[i] = static_cast<float>(data[2 * i] + data[2 * i + 1]) / 65536.0f;
+            const float left = static_cast<float>(data[2 * i]) * scale;
+            const float right = static_cast<float>(data[2 * i + 1]) * scale;
+            pcmf32[i] = 0.5f * (left + right);
         }
     }
 

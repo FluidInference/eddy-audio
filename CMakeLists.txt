@@ -45,6 +45,7 @@ target_sources(eddy
     src/core/app_dir.cpp
     src/utils/audio_utils.cpp
     src/utils/ensure_models.cpp
+    src/utils/openvino_utils.cpp
 
     # OpenVINO backend
     src/backends/openvino_backend.cpp
