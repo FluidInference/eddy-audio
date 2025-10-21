@@ -336,30 +336,28 @@ void OpenVINOParakeet::ensure_compiled_model() {
     // ========================================
     // Compile encoder, decoder, and joint models
     // ========================================
-    auto compile_with_fallback = [&](const ModelFile& file, const char* name) -> ov::CompiledModel {
+    auto compile_with_npu_fallback = [&](const ModelFile& file, const char* name) -> ov::CompiledModel {
       if (!target_npu) {
         return compile_component(core, file, device);
       }
 
       try {
         return compile_component(core, file, "NPU");
-      } catch (const std::exception& e) {
-        std::cerr << "[WARN] NPU compile failed for " << name << ": " << e.what() << "\n";
-        std::cerr << "[WARN] Falling back to CPU for " << name << "\n";
+      } catch (const std::exception&) {
+        if (std::getenv("EDDY_DEBUG")) {
+          std::cerr << "[DEBUG] NPU compile failed for " << name << ", using CPU\n";
+        }
         return compile_component(core, file, "CPU");
       }
     };
 
-    // Encoder
-    impl_->encoder_model = compile_with_fallback(impl_->model_paths.encoder, "encoder");
+    impl_->encoder_model = compile_with_npu_fallback(impl_->model_paths.encoder, "encoder");
     impl_->encoder_request = impl_->encoder_model.create_infer_request();
 
-    // Decoder
-    impl_->decoder_model = compile_with_fallback(impl_->model_paths.decoder, "decoder");
+    impl_->decoder_model = compile_with_npu_fallback(impl_->model_paths.decoder, "decoder");
     impl_->decoder_request = impl_->decoder_model.create_infer_request();
 
-    // Joint
-    impl_->joint_model = compile_with_fallback(impl_->model_paths.joint, "joint");
+    impl_->joint_model = compile_with_npu_fallback(impl_->model_paths.joint, "joint");
     impl_->joint_request = impl_->joint_model.create_infer_request();
 
     // ========================================
@@ -368,69 +366,42 @@ void OpenVINOParakeet::ensure_compiled_model() {
     impl_->tokenizer.load(impl_->model_paths.tokenizer_json, impl_->runtime_cfg.blank_token_id);
 
     // ========================================
-    // Resolve encoder ports by name (Parakeet model has fixed port names)
+    // Resolve encoder ports and extract metadata
     // ========================================
     try {
       impl_->encoder_ports.mel_in = impl_->encoder_model.input("melspectogram");
-    } catch (...) {
-      throw std::runtime_error("Missing encoder mel input port: melspectogram");
-    }
-
-    try {
       impl_->encoder_ports.len_in = impl_->encoder_model.input("melspectogram_length");
-    } catch (...) {
-      throw std::runtime_error("Missing encoder length input port: melspectogram_length");
-    }
-
-    try {
       impl_->encoder_ports.enc_out = impl_->encoder_model.output("encoder_output");
-    } catch (...) {
-      throw std::runtime_error("Missing encoder output port: encoder_output");
+    } catch (const std::exception& e) {
+      throw std::runtime_error(std::string("Failed to resolve encoder ports: ") + e.what());
     }
 
-    // Get expected frame count from mel input shape
-    {
-      const auto mel_shape = impl_->encoder_ports.mel_in.value().get_shape();
-      impl_->encoder_expected_frames = mel_shape.empty() ? 0U : mel_shape.back();
-    }
+    const auto mel_shape = impl_->encoder_ports.mel_in.value().get_shape();
+    impl_->encoder_expected_frames = mel_shape.empty() ? 0U : mel_shape.back();
 
     // ========================================
-    // Determine encoder output indices
+    // Determine encoder output indices and hidden size
     // ========================================
-    try {
-      const auto enc_out = impl_->encoder_model.output("encoder_output");
-      const auto outs = impl_->encoder_model.outputs();
+    const auto enc_out = impl_->encoder_model.output("encoder_output");
+    const auto enc_len = impl_->encoder_model.output("encoder_output_length");
+    const auto outs = impl_->encoder_model.outputs();
 
-      for (size_t i = 0; i < outs.size(); ++i) {
-        if (outs[i] == enc_out) {
-          impl_->encoder_output_index = i;
+    for (size_t i = 0; i < outs.size(); ++i) {
+      if (outs[i] == enc_out) {
+        impl_->encoder_output_index = i;
 
-          const auto shape = enc_out.get_shape();
-          if (shape.size() >= 2 && shape[1] == 0) {
-            throw std::runtime_error("Encoder hidden size is zero");
+        const auto shape = enc_out.get_shape();
+        if (shape.size() >= 2) {
+          impl_->encoder_hidden_size = shape[1];
+          if (shape[1] == 0) {
+            throw std::runtime_error("Encoder hidden size cannot be zero");
           }
-          if (shape.size() >= 2) {
-            impl_->encoder_hidden_size = shape[1];
-          }
-          break;
         }
       }
-    } catch (const std::exception& e) {
-      throw std::runtime_error(std::string("Failed to locate encoder output: encoder_output - ") + e.what());
-    }
 
-    try {
-      const auto enc_len = impl_->encoder_model.output("encoder_output_length");
-      const auto outs = impl_->encoder_model.outputs();
-
-      for (size_t i = 0; i < outs.size(); ++i) {
-        if (outs[i] == enc_len) {
-          impl_->encoder_length_index = i;
-          break;
-        }
+      if (outs[i] == enc_len) {
+        impl_->encoder_length_index = i;
       }
-    } catch (const std::exception& e) {
-      throw std::runtime_error(std::string("Failed to locate encoder length output: encoder_output_length - ") + e.what());
     }
 
     // ========================================
@@ -443,17 +414,15 @@ void OpenVINOParakeet::ensure_compiled_model() {
     impl_->decoder_hidden_size = decoder_state_shape[2];
 
     // ========================================
-    // Extract joint output size and validate
+    // Extract joint output size and validate config
     // ========================================
     const auto joint_shape = impl_->joint_model.output("logits").get_shape();
     if (joint_shape.empty()) {
       throw std::runtime_error("Joint model logits tensor has no dimensions");
     }
+
     impl_->joint_output_size = joint_shape.back();
 
-    // Validate joint output size matches vocab + duration bins
-    // Use blank_id + 1 as the effective vocab size for validation
-    // (vocab JSON may have extra entries beyond blank that aren't used)
     const auto effective_vocab_size = static_cast<size_t>(impl_->runtime_cfg.blank_token_id) + 1;
     const auto total_heads = effective_vocab_size + impl_->runtime_cfg.duration_bins.size();
 
@@ -461,10 +430,11 @@ void OpenVINOParakeet::ensure_compiled_model() {
       throw std::runtime_error("Joint model output smaller than token+duration heads");
     }
 
-    // Informative log to help diagnose mismatches between model head and configured bins
-    std::cerr << "[CFG] Joint output size: " << impl_->joint_output_size
-              << ", token head: " << effective_vocab_size
-              << ", duration bins: " << impl_->runtime_cfg.duration_bins.size() << "\n";
+    if (std::getenv("EDDY_DEBUG")) {
+      std::cerr << "[DEBUG] Joint output size: " << impl_->joint_output_size
+                << ", token head: " << effective_vocab_size
+                << ", duration bins: " << impl_->runtime_cfg.duration_bins.size() << "\n";
+    }
   });
 }
 
@@ -472,31 +442,25 @@ InferenceResult OpenVINOParakeet::infer(const AudioSegment& segment, const Segme
   ensure_compiled_model();
 
   const auto start = std::chrono::steady_clock::now();
-  double t_preproc_ms = 0.0;
-  double t_encoder_ms = 0.0;
-  double t_decoder_ms = 0.0;
-  double t_joint_ms = 0.0;
 
+  // Run preprocessing and inference pipeline
   MelProcessingResult mel_result;
+  double t_preproc_ms = 0.0;
   {
     std::lock_guard<std::mutex> lock(impl_->request_guard);
+
     auto t0 = std::chrono::steady_clock::now();
     const auto mel = run_preprocessor(*impl_, segment);
     auto t1 = std::chrono::steady_clock::now();
-    t_preproc_ms += std::chrono::duration<double, std::milli>(t1 - t0).count();
+    t_preproc_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
     mel_result = process_mel_features(*impl_, mel, options, impl_->encoder_expected_frames);
   }
 
-  t_encoder_ms = mel_result.encoder_ms;
-  t_decoder_ms = mel_result.decoder_ms;
-  t_joint_ms = mel_result.joint_ms;
-
   const auto end = std::chrono::steady_clock::now();
   const auto latency_ms = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(end - start).count();
-  const double known_ms = t_preproc_ms + t_encoder_ms + t_decoder_ms + t_joint_ms;
-  const double other_ms = latency_ms > known_ms ? (latency_ms - known_ms) : 0.0;
 
+  // Build result
   InferenceResult result;
   result.token_ids = std::move(mel_result.token_ids);
   result.text = impl_->tokenizer.decode(result.token_ids);
@@ -505,7 +469,7 @@ InferenceResult OpenVINOParakeet::infer(const AudioSegment& segment, const Segme
   result.chunk_sizes_frames = std::move(mel_result.chunk_sizes_frames);
   result.chunks = std::move(mel_result.chunk_logs);
 
-  // Calculate overall confidence (average of token confidences)
+  // Calculate overall confidence
   if (!result.token_timings.empty()) {
     float sum = 0.0F;
     for (const auto& timing : result.token_timings) {
@@ -513,10 +477,8 @@ InferenceResult OpenVINOParakeet::infer(const AudioSegment& segment, const Segme
     }
     result.overall_confidence = sum / static_cast<float>(result.token_timings.size());
   } else {
-    result.overall_confidence = 0.1F;  // FluidAudio default for empty transcription
+    result.overall_confidence = 0.1F;
   }
-
-  // Per-file profile removed (keep benchmark end summary only)
 
   return result;
 }

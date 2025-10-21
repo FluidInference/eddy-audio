@@ -9,18 +9,18 @@ namespace eddy::parakeet {
 
 namespace {
 
-// Read a single scalar length value from a tensor that may be i32 or i64.
-// Returns value as int64_t for consistency.
 int64_t read_length_scalar(const ov::Tensor& t) {
   const auto et = t.get_element_type();
+
   if (et == ov::element::i64) {
     return t.data<int64_t>()[0];
-  } else if (et == ov::element::i32) {
-    return static_cast<int64_t>(t.data<int32_t>()[0]);
-  } else {
-    // Fallback: try to interpret as i64
-    return t.data<int64_t>()[0];
   }
+
+  if (et == ov::element::i32) {
+    return static_cast<int64_t>(t.data<int32_t>()[0]);
+  }
+
+  throw std::runtime_error("Unsupported length tensor element type");
 }
 
 }  // namespace
@@ -33,66 +33,60 @@ MelFeatures run_preprocessor(ParakeetImpl& impl, const AudioSegment& segment) {
     throw std::invalid_argument("Parakeet OpenVINO pipeline expects 16 kHz audio samples");
   }
 
-  // Detect static preprocessor input length (window size). If static, we will
-  // process the audio in windows and concatenate mel outputs to avoid
-  // truncating long utterances. If dynamic, we pass the full audio once.
-  size_t window_samples = 0;  // 0 means dynamic length supported
-  try {
-    const auto pshape = impl.preproc_model.input(0).get_partial_shape();
-    if (pshape.rank().is_static() && pshape.rank().get_length() >= 2) {
-      const auto len_dim = pshape[1];
-      if (len_dim.is_static()) {
-        const auto static_len = static_cast<size_t>(len_dim.get_length());
-        if (static_len > 0) {
-          window_samples = static_len;  // fixed-size preprocessor
-        }
-      }
+  // Detect static preprocessor input length (window size).
+  // 0 = dynamic length supported, >0 = fixed window size (process in chunks)
+  size_t window_samples = 0;
+  const auto pshape = impl.preproc_model.input(0).get_partial_shape();
+
+  if (pshape.rank().is_static() && pshape.rank().get_length() >= 2) {
+    const auto len_dim = pshape[1];
+    if (len_dim.is_static() && len_dim.get_length() > 0) {
+      window_samples = static_cast<size_t>(len_dim.get_length());
     }
-  } catch (...) {
-    // If shape query fails, assume dynamic
-    window_samples = 0;
   }
+
+  // Query length input type once (fixed at model export)
+  const auto len_et = impl.preproc_model.input(1).get_element_type();
+  const bool use_i64 = (len_et == ov::element::i64);
 
   MelFeatures features;
 
   auto run_window = [&](const float* pcm_ptr, size_t pcm_count) -> std::pair<ov::Tensor, ov::Tensor> {
     const size_t req = window_samples > 0 ? window_samples : pcm_count;
+
+    // Create zero-padded audio tensor
     ov::Tensor audio_signal(ov::element::f32, {1, req});
-    std::fill(audio_signal.data<float>(), audio_signal.data<float>() + audio_signal.get_size(), 0.0F);
-    if (pcm_count) {
-      std::copy(pcm_ptr, pcm_ptr + std::min(req, pcm_count), audio_signal.data<float>());
+    std::fill(audio_signal.data<float>(), audio_signal.data<float>() + req, 0.0F);
+
+    const size_t samples_to_copy = std::min(req, pcm_count);
+    if (samples_to_copy > 0) {
+      std::copy(pcm_ptr, pcm_ptr + samples_to_copy, audio_signal.data<float>());
     }
 
-    // Match preprocessor length element type to model port to avoid i32/i64 mismatches
+    // Create length tensor with correct type
     ov::Tensor audio_length;
-    try {
-      const auto len_port = impl.preproc_model.input(1);
-      const auto len_et = len_port.get_element_type();
-      if (len_et == ov::element::i64) {
-        audio_length = ov::Tensor(ov::element::i64, {1});
-        audio_length.data<int64_t>()[0] = static_cast<int64_t>(std::min(req, pcm_count));
-      } else {
-        audio_length = ov::Tensor(ov::element::i32, {1});
-        audio_length.data<int32_t>()[0] = static_cast<int32_t>(std::min(req, pcm_count));
-      }
-    } catch (...) {
-      // Fallback to i64
+    if (use_i64) {
       audio_length = ov::Tensor(ov::element::i64, {1});
-      audio_length.data<int64_t>()[0] = static_cast<int64_t>(std::min(req, pcm_count));
+      audio_length.data<int64_t>()[0] = static_cast<int64_t>(samples_to_copy);
+    } else {
+      audio_length = ov::Tensor(ov::element::i32, {1});
+      audio_length.data<int32_t>()[0] = static_cast<int32_t>(samples_to_copy);
     }
 
-    impl.preproc_request.set_input_tensor(0, audio_signal);  // audio_signal
-    impl.preproc_request.set_input_tensor(1, audio_length);  // audio_length
+    impl.preproc_request.set_input_tensor(0, audio_signal);
+    impl.preproc_request.set_input_tensor(1, audio_length);
     impl.preproc_request.infer();
 
     return {
-      impl.preproc_request.get_output_tensor(0),  // melspectrogram
-      impl.preproc_request.get_output_tensor(1)   // melspectrogram_length
+      impl.preproc_request.get_output_tensor(0),
+      impl.preproc_request.get_output_tensor(1)
     };
   };
 
+  // ========================================
+  // Single-shot path: dynamic model or short audio
+  // ========================================
   if (window_samples == 0 || segment.pcm.size() <= window_samples) {
-    // Single-shot path: dynamic model or short audio
     auto [mel_tensor, length_tensor] = run_window(segment.pcm.data(), segment.pcm.size());
 
     const int64_t valid_frames = read_length_scalar(length_tensor);
@@ -109,25 +103,26 @@ MelFeatures run_preprocessor(ParakeetImpl& impl, const AudioSegment& segment) {
     const size_t time_steps = mel_shape[2];
     const size_t elements = mel_bins * time_steps;
 
-    // Retain tensors for potential zero-copy into encoder when shapes match
+    // Retain tensors for zero-copy into encoder when shapes match
     features.mel_tensor = mel_tensor;
     features.length_tensor = length_tensor;
     features.time_steps = time_steps;
     features.frames = static_cast<size_t>(valid_frames);
 
-    // Also keep a host copy for chunking operations (time-major layout)
+    // Keep host copy for chunking operations
     features.data.resize(elements);
     std::copy(mel_tensor.data<float>(), mel_tensor.data<float>() + elements, features.data.begin());
+
+  // ========================================
+  // Windowed path: long audio, process in chunks
+  // ========================================
   } else {
-    // Long audio path: process in multiple 10-second windows.
-    // Collect per-bin frame sequences, then flatten once at end.
+    constexpr size_t kMelBins = 128;
     const size_t total_samples = segment.pcm.size();
+
+    std::vector<std::vector<float>> mel_bins(kMelBins);
     size_t offset = 0;
     size_t total_frames = 0;
-    constexpr size_t kMelBins = 128;
-
-    // Accumulate per-bin frame sequences to avoid re-striding issues when growing
-    std::vector<std::vector<float>> mel_bins(kMelBins);
 
     while (offset < total_samples) {
       const size_t remaining = total_samples - offset;
@@ -135,19 +130,21 @@ MelFeatures run_preprocessor(ParakeetImpl& impl, const AudioSegment& segment) {
 
       auto [mel_tensor, length_tensor] = run_window(segment.pcm.data() + offset, this_count);
       const int64_t vframes = read_length_scalar(length_tensor);
+
       if (vframes <= 0) {
         offset += this_count;
-        continue;  // skip empty window (should not happen)
+        continue;
       }
 
       const auto mel_shape = mel_tensor.get_shape();
       if (mel_shape.size() != 3 || mel_shape[1] != kMelBins) {
-        throw std::runtime_error("Unexpected mel tensor shape from preprocessor (windowed)");
+        throw std::runtime_error("Unexpected mel tensor shape from preprocessor");
       }
+
       const size_t time_steps = mel_shape[2];
       const size_t frames_to_append = static_cast<size_t>(std::min<int64_t>(vframes, static_cast<int64_t>(time_steps)));
 
-      // Append frames for each mel bin; source layout is [bin][time]
+      // Append frames for each mel bin (layout: [bin][time])
       const float* src_base = mel_tensor.data<float>();
       for (size_t bin = 0; bin < kMelBins; ++bin) {
         const float* src = src_base + bin * time_steps;
@@ -162,19 +159,15 @@ MelFeatures run_preprocessor(ParakeetImpl& impl, const AudioSegment& segment) {
       throw std::runtime_error("Preprocessor produced no frames for long audio");
     }
 
-    // Flatten into time-major buffer [bin][time] with a consistent stride of total_frames
+    // Flatten into time-major buffer [bin][time]
     std::vector<float> mel_concat(kMelBins * total_frames);
     for (size_t bin = 0; bin < kMelBins; ++bin) {
-      if (mel_bins[bin].size() != total_frames) {
-        throw std::runtime_error("Internal error: inconsistent frame counts while concatenating mel frames");
-      }
       std::copy(mel_bins[bin].begin(), mel_bins[bin].end(), mel_concat.data() + bin * total_frames);
     }
 
     features.frames = total_frames;
     features.time_steps = total_frames;
     features.data = std::move(mel_concat);
-    // In windowed mode we don't retain a single mel_tensor/length_tensor; encoder path will use host copy
   }
 
   return features;
