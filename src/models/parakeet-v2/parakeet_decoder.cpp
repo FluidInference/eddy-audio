@@ -23,20 +23,32 @@ void initialize_decoder_state(ParakeetImpl& impl,
                               ov::Tensor& cell_state,
                               ov::Tensor& token_input,
                               ov::element::Type& targets_et) {
+  // Initialize LSTM state tensors
   hidden_state = ov::Tensor(ov::element::f32, {2, 1, impl.decoder_hidden_size});
   cell_state = ov::Tensor(ov::element::f32, {2, 1, impl.decoder_hidden_size});
+
+  // Restore or initialize LSTM state
   if (state.has_lstm_state) {
-    if (std::getenv("EDDY_DEBUG")) std::cerr << "[INFO] Continuing with preserved LSTM state from previous chunk\n";
+    if (std::getenv("EDDY_DEBUG")) {
+      std::cerr << "[INFO] Continuing with preserved LSTM state from previous chunk\n";
+    }
     std::memcpy(hidden_state.data<float>(), state.hidden_state.data<float>(), hidden_state.get_byte_size());
     std::memcpy(cell_state.data<float>(), state.cell_state.data<float>(), cell_state.get_byte_size());
   } else {
-    if (std::getenv("EDDY_DEBUG")) std::cerr << "[INFO] Starting with fresh LSTM state (first chunk)\n";
+    if (std::getenv("EDDY_DEBUG")) {
+      std::cerr << "[INFO] Starting with fresh LSTM state (first chunk)\n";
+    }
     std::fill(hidden_state.data<float>(), hidden_state.data<float>() + hidden_state.get_size(), 0.0F);
     std::fill(cell_state.data<float>(), cell_state.data<float>() + cell_state.get_size(), 0.0F);
   }
+
+  // Set starting token
   starting_token = state.last_token.value_or(blank_token_id);
+
+  // Create token input tensor with correct type
   auto targets_port = impl.decoder_model.input("targets");
   targets_et = targets_port.get_element_type();
+
   if (targets_et == ov::element::i64) {
     token_input = ov::Tensor(ov::element::i64, {1, 1});
     token_input.data<int64_t>()[0] = static_cast<int64_t>(starting_token);
@@ -62,13 +74,19 @@ void finalize_chunk_decoding(ParakeetImpl& impl,
                              double& t_joint_ms,
                              DecoderState& state,
                              size_t max_tokens) {
+  // Get last valid encoder frame
   const size_t valid_frames = std::min(encoder.valid_frames, encoder.time_steps);
   if (valid_frames == 0) return;
+
   const size_t last_frame = valid_frames > 0 ? (valid_frames - 1) : 0;
+
+  // Initialize stopping criteria
   size_t additional_steps = 0;
   size_t consecutive_blanks = 0;
   size_t max_additional_steps = DEFAULT_MAX_ADDITIONAL_STEPS;
   size_t max_consecutive_blanks = DEFAULT_MAX_CONSECUTIVE_BLANKS;
+
+  // Allow environment variable overrides
   if (const char* env_steps = std::getenv("EDDY_MAX_ADDITIONAL_STEPS")) {
     try {
       int v = std::stoi(env_steps);
