@@ -10,8 +10,15 @@
 
 namespace eddy::parakeet {
 
-// Internal implementation struct for OpenVINOParakeet
-// This header is for internal use only by the parakeet implementation files
+// PRIVATE IMPLEMENTATION HEADER - DO NOT INSTALL OR INCLUDE IN PUBLIC API
+//
+// This file contains internal implementation details for OpenVINOParakeet.
+// It is kept in src/ (not include/) to hide implementation from users:
+// - OpenVINO types (ov::CompiledModel, ov::InferRequest)
+// - Internal state management (mutexes, port indices)
+// - Implementation can change without breaking API
+//
+// Only parakeet_*.cpp files should include this header.
 struct ParakeetImpl {
   std::shared_ptr<eddy::OpenVINOBackend> backend;
   ModelPaths model_paths;
