@@ -1,98 +1,138 @@
 #!/usr/bin/env python3
 """
-Fast benchmark using C++ for inference + Python for WER calculation.
+LibriSpeech benchmark using Eddy C API via ctypes.
 
-This is the EFFICIENT approach:
-- C++ loads models once, processes all files (fast)
-- Python calculates WER with Whisper normalization (accurate)
+This is the CLEAN approach:
+- C++ library handles inference only
+- Python handles dataset loading, orchestration, and WER calculation
+- Direct C API calls via ctypes (no subprocess overhead)
 
 Workflow:
-1. Run C++ benchmark → outputs transcriptions.json
-2. Python WER calculation → outputs final_results.json
+1. Python rebuilds C++ library to ensure latest code
+2. Python loads LibriSpeech dataset using HuggingFace datasets
+3. Python calls C++ inference via eddy_c library
+4. Python normalizes output using Whisper normalizer
+5. Python calculates WER with jiwer
 
 Usage:
-    uv run benchmark.py --max-files 2620
+    uv run benchmark.py --max-files 2620 --device CPU
+    uv run benchmark.py --max-files 100 --device NPU
+    uv run benchmark.py --no-rebuild  # Skip rebuild step
 """
 
 import argparse
+import ctypes as C
+import json
 import subprocess
 import sys
+import time
 from pathlib import Path
-import json
-import os
-import re
 from typing import Dict, Any
+
+import numpy as np
 
 # Import dependencies
 try:
+    from datasets import load_dataset, Audio
     import jiwer
     from whisper_normalizer.english import EnglishTextNormalizer
 except ImportError as e:
     print(f"ERROR: Missing dependency: {e}")
-    print("Install with: cd benchmarks && uv pip install whisper-normalizer jiwer")
+    print("Install with: cd benchmarks && uv sync")
     sys.exit(1)
 
 # Initialize Whisper's English text normalizer (industry standard)
 english_normalizer = EnglishTextNormalizer()
 
 
+# ----- C types matching include/eddy/eddy_c.h -----
+
+class EddyParakeetConfig(C.Structure):
+    _fields_ = [
+        ("device", C.c_char_p),
+        ("model_dir", C.c_char_p),
+        ("blank_token_id", C.c_int),
+    ]
+
+
+class EddyParakeetResult(C.Structure):
+    _fields_ = [
+        ("text", C.c_char_p),
+        ("token_ids", C.POINTER(C.c_int)),
+        ("num_tokens", C.c_size_t),
+        ("confidence", C.c_float),
+        ("latency_ms", C.c_double),
+    ]
+
+
+def load_lib(path: str) -> C.CDLL:
+    """Load eddy_c library and configure function signatures"""
+    lib = C.CDLL(path)
+
+    # Function signatures
+    lib.eddy_parakeet_create.argtypes = [EddyParakeetConfig, C.POINTER(C.c_char_p)]
+    lib.eddy_parakeet_create.restype = C.c_void_p
+
+    lib.eddy_parakeet_destroy.argtypes = [C.c_void_p]
+    lib.eddy_parakeet_destroy.restype = None
+
+    lib.eddy_parakeet_infer_buffer.argtypes = [
+        C.c_void_p,
+        C.POINTER(C.c_float),
+        C.c_size_t,
+        C.c_int,
+        C.POINTER(EddyParakeetResult),
+        C.POINTER(C.c_char_p),
+    ]
+    lib.eddy_parakeet_infer_buffer.restype = C.c_int
+
+    lib.eddy_parakeet_free_result.argtypes = [C.POINTER(EddyParakeetResult)]
+    lib.eddy_parakeet_free_result.restype = None
+
+    lib.eddy_free_string.argtypes = [C.c_char_p]
+    lib.eddy_free_string.restype = None
+
+    return lib
+
+
 def normalize_text(text: str) -> str:
     """
-    Normalize text for WER calculation using OpenAI Whisper's normalizer.
+    Normalize text using OpenAI Whisper's normalizer.
 
     This is the industry standard used by:
     - OpenAI Whisper
     - Hugging Face Open ASR Leaderboard
     - FluidAudio/Parakeet benchmarks
-    - Most competitive ASR systems
     """
     return english_normalizer(text)
 
 
-def load_librispeech_transcripts(base_dir: Path = None):
+def normalize_text_cpp_style(text: str) -> str:
     """
-    Load LibriSpeech transcripts from .trans.txt files.
-
-    Returns dict mapping file_id -> transcript text.
+    Normalize text to match C++ TextNormalizer behavior:
+    - Lowercase
+    - Remove punctuation
+    - Normalize whitespace
     """
-    # Use cache directory
-    if base_dir is None:
-        if os.name == 'nt':  # Windows
-            cache_base = Path(os.environ.get('LOCALAPPDATA', Path.home() / 'AppData' / 'Local'))
-        else:  # Linux/Mac
-            cache_base = Path.home() / '.cache'
-        base_dir = cache_base / 'eddy' / 'datasets' / 'LibriSpeech' / 'test-clean'
-
-    if not base_dir.exists():
-        raise FileNotFoundError(
-            f"LibriSpeech dataset not found at {base_dir}\n"
-            f"C++ benchmark should have downloaded it automatically."
-        )
-
-    transcripts = {}
-
-    # Find all .trans.txt files
-    for trans_file in base_dir.rglob("*.trans.txt"):
-        with open(trans_file, "r", encoding="utf-8") as f:
-            for line in f:
-                # Format: "file_id TRANSCRIPT TEXT"
-                parts = line.strip().split(" ", 1)
-                if len(parts) == 2:
-                    file_id, text = parts
-                    transcripts[file_id] = text
-
-    return transcripts
+    import string
+    # Lowercase
+    text = text.lower()
+    # Remove punctuation
+    text = text.translate(str.maketrans('', '', string.punctuation))
+    # Normalize whitespace
+    text = ' '.join(text.split())
+    return text
 
 
 def calculate_wer(hypothesis: str, reference: str) -> Dict[str, Any]:
-    """Calculate WER metrics using jiwer"""
+    """Calculate WER metrics using jiwer with Whisper normalization"""
     hyp_norm = normalize_text(hypothesis)
     ref_norm = normalize_text(reference)
 
     # Calculate WER
     wer_score = jiwer.wer(ref_norm, hyp_norm)
 
-    # Get detailed measures using process_words
+    # Get detailed measures
     output = jiwer.process_words(ref_norm, hyp_norm)
 
     return {
@@ -101,205 +141,398 @@ def calculate_wer(hypothesis: str, reference: str) -> Dict[str, Any]:
         "deletions": output.deletions,
         "insertions": output.insertions,
         "hits": output.hits,
-        "hypothesis_normalized": hyp_norm,
-        "reference_normalized": ref_norm
     }
 
 
-def recalculate_wer_with_normalization(cpp_output_file: str, final_output_file: str):
-    """
-    Recalculate WER from C++ results using Python normalization.
+def rebuild_cpp_library() -> None:
+    """Rebuild the C++ eddy_c library to ensure latest code is used"""
+    print("Rebuilding C++ library...")
+    print("=" * 80)
 
-    Returns (python_wer, python_median_wer) or (None, None) on error.
-    """
-    # Load C++ benchmark results
-    print("Calculating WER with Python normalization...")
+    # Get project root directory (parent of benchmarks/)
+    project_root = Path(__file__).parent.parent
+    build_dir = project_root / "build"
 
-    try:
-        with open(cpp_output_file, 'r', encoding='utf-8') as f:
-            # Read raw content and fix Windows path escaping if needed
-            content = f.read()
-            # Replace unescaped backslashes in paths (C:\Users -> C:\\Users)
-            content = re.sub(r'(?<!\\)\\(?!["\\/bfnrtu])', r'\\\\', content)
-            data = json.loads(content)
-    except Exception as e:
-        print(f"ERROR: Could not load C++ results: {e}")
-        return None, None
+    if not build_dir.exists():
+        print(f"ERROR: Build directory not found: {build_dir}", file=sys.stderr)
+        print("Run 'cmake -B build' from project root first", file=sys.stderr)
+        sys.exit(1)
 
-    results = data.get('results', [])
-
-    # Load LibriSpeech references
-    try:
-        transcripts = load_librispeech_transcripts()
-    except Exception as e:
-        print(f"ERROR: Could not load references: {e}")
-        return None, None
-
-    # Calculate WER for each result
-    processed = 0
-    failed = 0
-
-    for result in results:
-        file_id = result.get('file_id')
-        hypothesis = result.get('hypothesis', '')
-
-        # Get reference
-        reference = transcripts.get(file_id)
-        if not reference:
-            print(f"WARN: No reference found for {file_id}")
-            failed += 1
-            continue
-
-        # Calculate WER with Python normalization
-        wer_metrics = calculate_wer(hypothesis, reference)
-
-        # Update result
-        result['reference'] = reference
-        result.update(wer_metrics)
-        processed += 1
-
-    # Calculate summary statistics
-    if processed > 0:
-        avg_wer = sum(r.get("wer", 0) for r in results if "wer" in r) / processed
-        median_wer = sorted(r.get("wer", 0) for r in results if "wer" in r)[processed // 2]
-
-        # Update summary
-        data['summary']['avg_wer'] = avg_wer
-        data['summary']['median_wer'] = median_wer
-        data['summary']['total_files'] = processed
-
-        # Save results
-        with open(final_output_file, "w") as f:
-            json.dump(data, f, indent=2)
-
-        return avg_wer, median_wer
+    # Determine build command based on platform
+    import platform
+    if platform.system() == "Windows":
+        build_cmd = ["cmake", "--build", str(build_dir), "--config", "Release", "--target", "eddy_c"]
     else:
-        print("ERROR: No results processed")
-        return None, None
+        build_cmd = ["cmake", "--build", str(build_dir), "--target", "eddy_c"]
+
+    try:
+        result = subprocess.run(build_cmd, check=True, capture_output=True, text=True, cwd=str(project_root))
+        print(result.stdout)
+        if result.stderr:
+            print(result.stderr, file=sys.stderr)
+        print("Build successful!")
+        print("=" * 80)
+    except subprocess.CalledProcessError as e:
+        print(f"ERROR: Build failed with exit code {e.returncode}", file=sys.stderr)
+        print(e.stdout, file=sys.stderr)
+        print(e.stderr, file=sys.stderr)
+        sys.exit(1)
+    except FileNotFoundError:
+        print("ERROR: cmake not found. Make sure CMake is installed and in PATH", file=sys.stderr)
+        sys.exit(1)
+
+
+def find_eddy_c_lib() -> Path:
+    """Auto-detect eddy_c library path"""
+    # Get project root directory (parent of benchmarks/)
+    project_root = Path(__file__).parent.parent
+
+    # Common locations relative to project root
+    candidates = [
+        project_root / "build/Release/eddy_c.dll",  # Windows
+        project_root / "build/Debug/eddy_c.dll",
+        project_root / "build/libeddy_c.so",  # Linux
+        project_root / "build/libeddy_c.dylib",  # macOS
+    ]
+
+    for path in candidates:
+        if path.exists():
+            return path
+
+    raise FileNotFoundError(
+        f"Could not find eddy_c library. Build it first:\n"
+        f"  cmake --build {project_root}/build --config Release --target eddy_c"
+    )
+
+
+def renormalize_json(json_path: str, output_path: str = None):
+    """Re-normalize an existing benchmark JSON file with OpenAI Whisper normalizer"""
+    import json
+
+    print(f"Loading results from: {json_path}")
+    with open(json_path) as f:
+        data = json.load(f)
+
+    per_file = data.get("per_file_results", [])
+    print(f"Re-normalizing {len(per_file)} results with OpenAI Whisper normalizer...")
+
+    total_edits = 0
+    total_words = 0
+    wer_values = []
+
+    for i, result in enumerate(per_file):
+        ref = result.get("reference", "")
+        hyp = result.get("hypothesis", "")
+
+        # Recalculate WER with proper normalization
+        wer_metrics = calculate_wer(hyp, ref)
+
+        # Store original WER
+        result["wer_original"] = result.get("wer", 0.0)
+        result["wer"] = wer_metrics["wer"]
+
+        # Update normalized text
+        result["reference_normalized"] = normalize_text(ref)
+        result["hypothesis_normalized"] = normalize_text(hyp)
+
+        # Track totals
+        ref_words = len(normalize_text(ref).split())
+        total_edits += wer_metrics["substitutions"] + wer_metrics["deletions"] + wer_metrics["insertions"]
+        total_words += ref_words
+        wer_values.append(wer_metrics["wer"])
+
+        if (i + 1) % 100 == 0:
+            print(f"  [{i+1}/{len(per_file)}] Processed...")
+
+    # Calculate new metrics
+    overall_wer = (total_edits / total_words * 100) if total_words > 0 else 0.0
+    median_wer = sorted(wer_values)[len(wer_values) // 2] if wer_values else 0.0
+
+    # Update metrics
+    if "metrics" not in data:
+        data["metrics"] = {}
+
+    data["metrics"]["overall_wer_original"] = data["metrics"].get("overall_wer", 0.0)
+    data["metrics"]["overall_wer"] = overall_wer
+    data["metrics"]["median_wer"] = median_wer
+    data["metrics"]["normalization"] = "OpenAI Whisper English"
+
+    # Save
+    if output_path is None:
+        output_path = json_path.replace(".json", "_normalized.json")
+
+    print(f"Saving to: {output_path}")
+    with open(output_path, 'w') as f:
+        json.dump(data, f, indent=2)
+
+    # Print summary
+    print("\n" + "=" * 80)
+    print("RE-NORMALIZATION SUMMARY")
+    print("=" * 80)
+    print(f"Files processed:      {len(per_file)}")
+    print(f"Original WER:         {data['metrics']['overall_wer_original']:.2f}%")
+    print(f"Normalized WER:       {overall_wer:.2f}%")
+    print(f"Median WER:           {median_wer:.2f}%")
+    print(f"Improvement:          {data['metrics']['overall_wer_original'] - overall_wer:.2f}%")
+    print("=" * 80)
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Fast benchmark (C++ inference + Python WER)"
-    )
-    parser.add_argument("--max-files", type=int, default=25,
-                       help="Maximum number of files to process (default: 25)")
-    parser.add_argument("--device", default="CPU",
-                       choices=["CPU", "GPU", "NPU", "AUTO"],
-                       help="OpenVINO device: CPU, GPU, NPU, AUTO (default: CPU)")
-    parser.add_argument("--output", default="eddy_benchmark_results.json",
-                       help="Final output JSON file (default: eddy_benchmark_results.json)")
+    ap = argparse.ArgumentParser(description="Parakeet LibriSpeech benchmark via C API")
+    ap.add_argument("--lib", default=None, help="Path to eddy_c shared library (auto-detected if not specified)")
+    ap.add_argument("--device", default="CPU", help="Device: CPU/GPU/NPU/AUTO (default: CPU)")
+    ap.add_argument("--model-dir", default=None, help="Directory with parakeet model files (defaults to Eddy cache)")
+    ap.add_argument("--max-files", default=50, help="Max files to evaluate (default: 50, use 'all' for 2620)")
+    ap.add_argument("--dataset-config", default="clean", help="HF datasets config (default: clean)")
+    ap.add_argument("--split", default="test", help="HF datasets split (default: test)")
+    ap.add_argument("--output", default="eddy_benchmark_results.json", help="Output JSON file")
+    ap.add_argument("--no-rebuild", action="store_true", help="Skip rebuilding C++ library (use existing build)")
+    args = ap.parse_args()
 
-    args = parser.parse_args()
+    # Handle 'all' for max-files
+    if isinstance(args.max_files, str):
+        if args.max_files.lower() == "all":
+            args.max_files = 999999  # Will be capped by dataset size
+        else:
+            args.max_files = int(args.max_files)  # Convert string number to int
 
-    print("=" * 80)
-    print("eddy Fast Benchmark (C++ + Python)")
-    print("=" * 80)
-    print()
-    print("Step 1: C++ inference (fast, models loaded once)")
-    print("Step 2: Python WER calculation (Whisper normalization)")
-    print()
+    # Rebuild C++ library unless --no-rebuild is specified
+    if not args.no_rebuild:
+        rebuild_cpp_library()
 
-    # Check if C++ benchmark exists (look in parent directory)
-    cpp_benchmark = Path("../build/examples/cpp/Release/benchmark_librispeech.exe")
-    if not cpp_benchmark.exists():
-        print(f"ERROR: C++ benchmark not found at {cpp_benchmark}")
-        print("\nBuild it with (from project root):")
-        print("  cmake --build build --config Release --target benchmark_librispeech")
+    # Find library
+    lib_path = Path(args.lib) if args.lib else find_eddy_c_lib()
+    if not lib_path.exists():
+        print(f"ERROR: Library not found: {lib_path}", file=sys.stderr)
         sys.exit(1)
 
-    # Step 1: Run C++ benchmark
-    print("=" * 80)
-    print("STEP 1: Running C++ benchmark...")
-    print("=" * 80)
-    print()
+    print(f"Using library: {lib_path}")
 
-    # Note: C++ benchmark currently ignores --output and saves to hardcoded filename
-    temp_output = "eddy_benchmark_results_cpp.json"
-    cpp_cmd = [
-        str(cpp_benchmark),
-        "--max-files", str(args.max_files),
-        "--device", args.device
-    ]
+    # Load dataset
+    # First try loading from local LibriSpeech directory (avoids 100GB+ HF download)
+    local_test_dir = Path.home() / ".cache" / "librispeech" / "LibriSpeech" / "test-clean"
 
-    try:
-        result = subprocess.run(cpp_cmd, check=True)
-    except subprocess.CalledProcessError as e:
-        print(f"\nERROR: C++ benchmark failed: {e}")
-        sys.exit(1)
+    if local_test_dir.exists() and args.split == "test":
+        print(f"Loading dataset from local directory: {local_test_dir}")
+        # Load from local LibriSpeech format
+        from datasets import Dataset
 
-    # Load and display C++ results
-    import json
-    try:
-        with open(temp_output, 'r', encoding='utf-8') as f:
-            content = f.read()
-            import re
-            content = re.sub(r'(?<!\\)\\(?!["\\/bfnrtu])', r'\\\\', content)
-            cpp_data = json.loads(content)
+        # LibriSpeech structure: speaker_id/chapter_id/audio_files.flac + transcripts
+        examples = []
+        for speaker_dir in sorted(local_test_dir.iterdir()):
+            if not speaker_dir.is_dir():
+                continue
+            for chapter_dir in sorted(speaker_dir.iterdir()):
+                if not chapter_dir.is_dir():
+                    continue
 
-        cpp_summary = cpp_data.get('summary', {})
-        cpp_wer = cpp_summary.get('average_wer_percent', 0)
-        cpp_median_wer = cpp_summary.get('median_wer_percent', 0)
-        cpp_rtfx = cpp_summary.get('overall_rtfx', 0)
+                # Load transcript file
+                trans_file = chapter_dir / f"{speaker_dir.name}-{chapter_dir.name}.trans.txt"
+                if not trans_file.exists():
+                    continue
 
-        print()
-        print("C++ Results (no text normalization):")
-        print(f"  Average WER: {cpp_wer:.2f}%")
-        print(f"  Median WER:  {cpp_median_wer:.2f}%")
-        print(f"  Overall RTFx: {cpp_rtfx:.1f}x")
-    except Exception as e:
-        print(f"\nWARN: Could not load C++ results: {e}")
-        cpp_wer = None
+                transcripts = {}
+                with open(trans_file) as f:
+                    for line in f:
+                        parts = line.strip().split(" ", 1)
+                        if len(parts) == 2:
+                            transcripts[parts[0]] = parts[1]
 
-    # Step 2: Calculate WER with Python
-    print()
-    print("=" * 80)
-    print("STEP 2: Calculating WER with Python normalization...")
-    print("=" * 80)
-    print()
+                # Load audio files
+                for flac_file in sorted(chapter_dir.glob("*.flac")):
+                    file_id = flac_file.stem
+                    if file_id in transcripts:
+                        examples.append({
+                            "id": file_id,
+                            "audio": str(flac_file),
+                            "text": transcripts[file_id]
+                        })
 
-    # Recalculate WER with normalization
-    python_wer, python_median_wer = recalculate_wer_with_normalization(
-        temp_output,
-        args.output
-    )
-
-    if python_wer is not None:
-        print()
-        print("Python Results (with Whisper normalization):")
-        print(f"  Average WER: {python_wer:.2f}%")
-        print(f"  Median WER:  {python_median_wer:.2f}%")
+        print(f"Loaded {len(examples)} examples from local LibriSpeech")
+        ds = Dataset.from_list(examples)
+        # Don't cast to Audio type - we'll load files manually with soundfile
     else:
-        print("\nERROR: WER calculation failed")
+        # Fallback to HuggingFace (will download everything)
+        print(f"Loading dataset: librispeech_asr/{args.dataset_config} {args.split}")
+        print(f"Note: This downloads all splits (~15GB). For test-only, run:")
+        print(f"  python /tmp/download_test_only.py")
+        ds = load_dataset("librispeech_asr", args.dataset_config, split=args.split)
+        ds = ds.cast_column("audio", Audio(sampling_rate=16000))
+
+    # Load library and create model
+    print(f"Loading model on device: {args.device}")
+    lib = load_lib(str(lib_path))
+    err = C.c_char_p()
+    cfg = EddyParakeetConfig(
+        device=args.device.encode("utf-8"),
+        model_dir=args.model_dir.encode("utf-8") if args.model_dir else None,
+        blank_token_id=1024,
+    )
+    handle = lib.eddy_parakeet_create(cfg, C.byref(err))
+    if not handle:
+        msg = err.value.decode("utf-8") if err.value else "unknown error"
+        print(f"ERROR: Failed to create Parakeet model: {msg}", file=sys.stderr)
         sys.exit(1)
+    if err.value:
+        lib.eddy_free_string(err)
 
-    # Keep C++ output for reference (don't delete)
-    print(f"\nC++ results preserved at: {temp_output}")
+    print(f"\nRunning inference on {min(args.max_files, len(ds))} files...")
+    print("=" * 80)
 
-    print()
-    print("=" * 80)
-    print("COMPARISON: Impact of Text Normalization")
-    print("=" * 80)
-    if cpp_wer is not None and python_wer is not None:
-        improvement = cpp_wer - python_wer
-        improvement_pct = (improvement / cpp_wer * 100) if cpp_wer > 0 else 0
+    results = []
+    total_edits = 0
+    total_words = 0
+    total_original_edits = 0
+    total_original_words = 0
+    total_audio_duration = 0.0
+    total_processing_time = 0.0
+    start_time = time.time()
 
-        print(f"C++ WER (no normalization):      {cpp_wer:.2f}%")
-        print(f"Python WER (Whisper normalization): {python_wer:.2f}%")
-        print(f"Improvement:                      {improvement:.2f}% ({improvement_pct:.1f}% better)")
-        print()
-        print("Text normalization (OpenAI Whisper standard):")
-        print("  - Lowercase conversion")
-        print("  - Punctuation removal")
-        print("  - Number standardization")
-        print("  - Whitespace normalization")
-        print("  - Remove filler words and special tokens")
-    print()
+    n = min(args.max_files, len(ds))
+    for i in range(n):
+        ex = ds[i]
+        file_id = ex.get("id", f"file_{i}")
+        ref = ex.get("text", "")
+
+        # Load audio manually since torchcodec isn't available
+        audio_path = ex["audio"]
+        if isinstance(audio_path, str):
+            # Local file path - load with soundfile
+            import soundfile as sf
+            pcm, sr = sf.read(audio_path, dtype='float32')
+            if sr != 16000:
+                # Resample if needed (shouldn't happen with LibriSpeech)
+                from scipy import signal
+                pcm = signal.resample(pcm, int(len(pcm) * 16000 / sr))
+        else:
+            # HuggingFace dataset format
+            pcm = np.asarray(audio_path["array"], dtype=np.float32)
+
+        buf = np.ascontiguousarray(pcm)
+
+        # Calculate audio duration
+        audio_duration = len(pcm) / 16000.0
+
+        # Run inference
+        res = EddyParakeetResult()
+        call_err = C.c_char_p()
+        rc = lib.eddy_parakeet_infer_buffer(
+            handle,
+            buf.ctypes.data_as(C.POINTER(C.c_float)),
+            C.c_size_t(buf.size),
+            C.c_int(16000),
+            C.byref(res),
+            C.byref(call_err),
+        )
+
+        if rc != 0:
+            msg = call_err.value.decode("utf-8") if call_err.value else f"error code {rc}"
+            print(f"[{i+1}/{n}] ERROR: {msg}", file=sys.stderr)
+            if call_err.value:
+                lib.eddy_free_string(call_err)
+            continue
+
+        hyp = (res.text or b"").decode("utf-8", errors="ignore")
+
+        # Calculate WER with C++ normalization (lowercase + remove punctuation - matches C++ TextNormalizer)
+        cpp_normalized_ref = normalize_text_cpp_style(ref)
+        cpp_normalized_hyp = normalize_text_cpp_style(hyp)
+        cpp_output = jiwer.process_words(cpp_normalized_ref, cpp_normalized_hyp)
+        cpp_wer = cpp_output.wer * 100.0
+
+        # Calculate WER with OpenAI Whisper normalization (full normalization)
+        wer_metrics = calculate_wer(hyp, ref)
+
+        # Track totals (C++ style normalization)
+        total_original_edits += cpp_output.substitutions + cpp_output.deletions + cpp_output.insertions
+        total_original_words += cpp_output.substitutions + cpp_output.deletions + cpp_output.hits
+
+        # Track totals (OpenAI Whisper normalization)
+        ref_words = len(normalize_text(ref).split())
+        total_edits += wer_metrics["substitutions"] + wer_metrics["deletions"] + wer_metrics["insertions"]
+        total_words += ref_words
+
+        total_audio_duration += audio_duration
+        total_processing_time += res.latency_ms / 1000.0
+
+        # Store result
+        result = {
+            "file_id": file_id,
+            "reference": ref,
+            "hypothesis": hyp,
+            "wer": wer_metrics["wer"],
+            "wer_cpp": cpp_wer,
+            "audio_duration_sec": audio_duration,
+            "processing_time_sec": res.latency_ms / 1000.0,
+            "rtfx": audio_duration / (res.latency_ms / 1000.0),
+            "confidence": res.confidence,
+        }
+        results.append(result)
+
+        # Free resources
+        lib.eddy_parakeet_free_result(C.byref(res))
+        if call_err.value:
+            lib.eddy_free_string(call_err)
+
+        # Progress update
+        if (i + 1) % 10 == 0 or i == n - 1:
+            current_wer = (total_edits / max(1, total_words)) * 100
+            current_rtfx = total_audio_duration / max(0.001, total_processing_time)
+            print(f"[{i+1}/{n}] WER: {current_wer:.2f}%  RTFx: {current_rtfx:.1f}x  Last: {wer_metrics['wer']:.2f}%")
+
+    lib.eddy_parakeet_destroy(handle)
+
+    # Calculate final metrics
+    elapsed_time = time.time() - start_time
+    overall_wer = (total_edits / max(1, total_words)) * 100
+    overall_wer_original = (total_original_edits / max(1, total_original_words)) * 100
+    overall_rtfx = total_audio_duration / max(0.001, total_processing_time)
+
+    # Compute per-file WER statistics
+    wer_values = [r["wer"] for r in results]
+    wer_values.sort()
+    median_wer = wer_values[len(wer_values) // 2] if wer_values else 0.0
+
+    # Save results
+    output_data = {
+        "config": {
+            "device": args.device,
+            "model_dir": args.model_dir or "cache",
+            "dataset": f"librispeech_asr/{args.dataset_config}",
+            "split": args.split,
+            "num_files": n,
+        },
+        "metrics": {
+            "overall_wer": overall_wer,
+            "overall_wer_cpp": overall_wer_original,
+            "median_wer": median_wer,
+            "overall_rtfx": overall_rtfx,
+            "total_audio_duration_sec": total_audio_duration,
+            "total_processing_time_sec": total_processing_time,
+            "benchmark_elapsed_sec": elapsed_time,
+            "normalization": "OpenAI Whisper English",
+        },
+        "per_file_results": results,
+    }
+
+    output_path = Path(args.output)
+    with open(output_path, "w") as f:
+        json.dump(output_data, f, indent=2)
+
+    # Print summary
+    print("\n" + "=" * 80)
+    print("BENCHMARK SUMMARY")
     print("=" * 80)
-    print(f"Final results saved to: {args.output}")
+    print(f"Files processed:      {n}")
+    print(f"Overall WER (C++):    {overall_wer_original:.2f}%")
+    print(f"Overall WER (norm):   {overall_wer:.2f}% (OpenAI Whisper normalized)")
+    print(f"Median WER:           {median_wer:.2f}%")
+    print(f"Overall RTFx:         {overall_rtfx:.1f}x")
+    print(f"Total audio:          {total_audio_duration:.1f}s")
+    print(f"Total processing:     {total_processing_time:.1f}s")
+    print(f"Benchmark elapsed:    {elapsed_time:.1f}s")
+    print(f"Results saved to:     {output_path}")
     print("=" * 80)
-    print()
-    print("This approach is 2-3x faster than the subprocess-per-file approach!")
 
 
 if __name__ == "__main__":
