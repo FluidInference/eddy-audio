@@ -22,7 +22,7 @@ namespace audio {
  * @return Vector of float32 PCM samples normalized to [-1, 1] at 16kHz mono
  * @throws std::runtime_error if file cannot be opened or processed
  */
-std::vector<float> read_wav(const std::string& filename);
+[[nodiscard]] std::vector<float> read_wav(const std::string& filename);
 
 /**
  * @brief Convert in-memory PCM16 buffer to float32 mono
@@ -35,7 +35,7 @@ std::vector<float> read_wav(const std::string& filename);
  * @return Vector of float32 PCM samples normalized to [-1, 1]
  * @throws std::runtime_error if channels not 1 or 2
  */
-std::vector<float> pcm16_to_float32(const int16_t* data, size_t size, int channels = 1);
+[[nodiscard]] std::vector<float> pcm16_to_float32(const int16_t* data, size_t size, int channels = 1);
 
 }  // namespace audio
 }  // namespace eddy

@@ -13,7 +13,12 @@ using namespace eddy::model_configs;
 
 bool download_file(const std::string& url, const fs::path& output_path) {
     // Create parent directory
-    fs::create_directories(output_path.parent_path());
+    std::error_code ec;
+    fs::create_directories(output_path.parent_path(), ec);
+    if (ec) {
+        std::cerr << "ERROR: Could not create directory: " << ec.message() << "\n";
+        return false;
+    }
 
     std::string curl_cmd = "curl -L --progress-bar \"" + url + "\" -o \"" + output_path.string() + "\"";
 
@@ -26,12 +31,13 @@ bool download_file(const std::string& url, const fs::path& output_path) {
         return false;
     }
 
-    if (!fs::exists(output_path) || fs::file_size(output_path) == 0) {
+    auto size = fs::file_size(output_path, ec);
+    if (ec || size == 0) {
         std::cerr << "ERROR: Downloaded file is missing or empty\n";
         return false;
     }
 
-    std::cout << "[OK] " << (fs::file_size(output_path) / (1024 * 1024)) << " MB\n\n";
+    std::cout << "[OK] " << (size / (1024 * 1024)) << " MB\n\n";
     return true;
 }
 
@@ -42,14 +48,16 @@ std::string get_cache_dir(const std::string& cache_subdir) {
         std::cerr << "ERROR: LOCALAPPDATA not set\n";
         return "";
     }
-    return std::string(localappdata) + "\\eddy\\models\\" + cache_subdir + "\\files";
+    fs::path base = fs::path(localappdata) / "eddy" / "models" / cache_subdir / "files";
+    return base.string();
 #else
     const char* home = std::getenv("HOME");
     if (!home) {
         std::cerr << "ERROR: HOME not set\n";
         return "";
     }
-    return std::string(home) + "/.cache/eddy/models/" + cache_subdir + "/files";
+    fs::path base = fs::path(home) / ".cache" / "eddy" / "models" / cache_subdir / "files";
+    return base.string();
 #endif
 }
 
@@ -71,8 +79,6 @@ int main(int argc, char** argv) {
     // Start with default model configuration
     eddy::ModelConfig config = DEFAULT;
     std::string target_dir;
-    bool custom_repo = false;
-    bool custom_files = false;
 
     // Parse arguments
     for (int i = 1; i < argc; ++i) {
@@ -95,7 +101,6 @@ int main(int argc, char** argv) {
         }
         else if (arg == "--repo" && i + 1 < argc) {
             config.repo_id = argv[++i];
-            custom_repo = true;
         }
         else if (arg == "--target" && i + 1 < argc) {
             target_dir = argv[++i];
@@ -110,7 +115,6 @@ int main(int argc, char** argv) {
                 start = end + 1;
             }
             config.required_files.push_back(files_str.substr(start));
-            custom_files = true;
         }
         else {
             std::cerr << "ERROR: Unknown argument: " << arg << "\n\n";
@@ -142,7 +146,9 @@ int main(int argc, char** argv) {
     bool all_exist = true;
     for (const auto& file : config.required_files) {
         fs::path file_path = fs::path(target_dir) / file;
-        if (!fs::exists(file_path) || fs::file_size(file_path) == 0) {
+        std::error_code ec;
+        auto size = fs::file_size(file_path, ec);
+        if (ec || size == 0) {
             all_exist = false;
             break;
         }
@@ -161,7 +167,9 @@ int main(int argc, char** argv) {
         fs::path file_path = fs::path(target_dir) / file;
 
         // Skip if already exists
-        if (fs::exists(file_path) && fs::file_size(file_path) > 0) {
+        std::error_code ec;
+        auto size = fs::file_size(file_path, ec);
+        if (!ec && size > 0) {
             std::cout << "[SKIP] " << file << " (already exists)\n\n";
             succeeded++;
             continue;

@@ -123,6 +123,7 @@ void finalize_chunk_decoding(ParakeetImpl& impl,
       std::memcpy(joint_dec_in.data<float>(), state.cached_decoder_output.data<float>(), joint_dec_in.get_byte_size());
       next_hidden = hidden_state;
       next_cell = cell_state;
+
     } else {
       // Run decoder inference
       if (targets_et == ov::element::i64) {
@@ -153,6 +154,7 @@ void finalize_chunk_decoding(ParakeetImpl& impl,
       std::memcpy(state.cached_decoder_output.data<float>(), decoder_output.data<float>(), decoder_output.get_byte_size());
       state.has_cached_output = true;
     }
+
     // Prepare encoder output for joint network
     const float* enc = encoder.tensor.data<float>();
     float* dst = joint_enc_in.data<float>();
@@ -322,12 +324,13 @@ DecoderResult run_decoder(ParakeetImpl& impl,
       // CACHE HIT: Reuse cached decoder output - significant speedup!
       cache_hits++;
       std::memcpy(joint_dec_in.data<float>(), state.cached_decoder_output.data<float>(), decoder_step.get_byte_size());
-      // Keep existing LSTM state tensors
       next_hidden = hidden_state;
       next_cell = cell_state;
+
     } else {
       // CACHE MISS: Need to run decoder LSTM
       decoder_runs++;
+
       if (targets_et == ov::element::i64) {
         token_input.data<int64_t>()[0] = static_cast<int64_t>(last_token);
       } else {
@@ -337,16 +340,17 @@ DecoderResult run_decoder(ParakeetImpl& impl,
       impl.decoder_request.set_tensor(impl.decoder_model.input("targets"), token_input);
       impl.decoder_request.set_tensor(impl.decoder_model.input("h_in"), hidden_state);
       impl.decoder_request.set_tensor(impl.decoder_model.input("c_in"), cell_state);
+
       auto td0 = std::chrono::steady_clock::now();
       impl.decoder_request.infer();
       auto td1 = std::chrono::steady_clock::now();
       t_decoder_ms += std::chrono::duration<double, std::milli>(td1 - td0).count();
 
-      decoder_output = impl.decoder_request.get_output_tensor(0);  // decoder_output
-      next_hidden = impl.decoder_request.get_output_tensor(1);  // h_out
-      next_cell = impl.decoder_request.get_output_tensor(2);  // c_out
+      decoder_output = impl.decoder_request.get_output_tensor(0);
+      next_hidden = impl.decoder_request.get_output_tensor(1);
+      next_cell = impl.decoder_request.get_output_tensor(2);
 
-      // Store decoder output for potential reuse
+      // Store decoder output for joint network
       std::memcpy(joint_dec_in.data<float>(), decoder_output.data<float>(), decoder_output.get_byte_size());
 
       // Cache this decoder output for next iteration
@@ -362,17 +366,18 @@ DecoderResult run_decoder(ParakeetImpl& impl,
     while (advance_mask && frame_index < valid_frames && tokens.size() < options.max_tokens) {
       total_joint_calls++;
 
-      // Extract encoder frame for current timestep into contiguous buffer
+      // Extract encoder frame for current timestep
       {
         const float* enc = encoder.tensor.data<float>();
         float* dst = joint_enc_in.data<float>();
-        // Bounds check: verify we can read the last channel's current frame
+
         const size_t max_offset = (impl.encoder_hidden_size - 1) * encoder.time_steps + frame_index;
         if (max_offset >= encoder.tensor.get_size()) {
           throw std::runtime_error("Encoder tensor access out of bounds in inner loop: offset=" +
                                    std::to_string(max_offset) +
                                    " size=" + std::to_string(encoder.tensor.get_size()));
         }
+
         for (size_t channel = 0; channel < impl.encoder_hidden_size; ++channel) {
           const size_t offset = channel * encoder.time_steps + frame_index;
           dst[channel] = enc[offset];
@@ -385,7 +390,7 @@ DecoderResult run_decoder(ParakeetImpl& impl,
       auto tj1 = std::chrono::steady_clock::now();
       t_joint_ms += std::chrono::duration<double, std::milli>(tj1 - tj0).count();
 
-      const auto logits_tensor = impl.joint_request.get_output_tensor(0);  // logits
+      const auto logits_tensor = impl.joint_request.get_output_tensor(0);
       const float* logits = logits_tensor.data<float>();
 
       // Find best token within token head region
@@ -422,7 +427,7 @@ DecoderResult run_decoder(ParakeetImpl& impl,
 
       int duration = impl.runtime_cfg.duration_bins[best_duration_idx];
       if (duration <= 0) {
-        duration = 1;  // Always advance at least 1 frame
+        duration = 1;
       }
 
       const bool is_blank = static_cast<int>(best_token) == impl.runtime_cfg.blank_token_id;
@@ -430,10 +435,10 @@ DecoderResult run_decoder(ParakeetImpl& impl,
       if (!is_blank) {
         // Non-blank token: emit it and exit inner loop
         non_blank_tokens++;
+
         const int token_id = static_cast<int>(best_token);
         tokens.push_back(token_id);
 
-        // Record timing information
         timings.push_back({
           .token_id = token_id,
           .frame_index = frame_index,
@@ -441,18 +446,20 @@ DecoderResult run_decoder(ParakeetImpl& impl,
         });
 
         last_token = token_id;
+
         // Update LSTM state with new token's context
         std::memcpy(hidden_state.data<float>(), next_hidden.data<float>(), next_hidden.get_byte_size());
         std::memcpy(cell_state.data<float>(), next_cell.data<float>(), next_cell.get_byte_size());
 
-        // IMPORTANT: Invalidate cache since token changed - force decoder run next iteration
+        // Invalidate cache - force decoder run next iteration
         state.has_cached_output = false;
 
-        advance_mask = false;  // Exit inner loop - will run decoder again
+        advance_mask = false;
+
       } else {
-        // Blank token: continue inner loop without updating decoder
+        // Blank token: continue inner loop
         blank_tokens++;
-        advance_mask = true;  // Continue inner loop
+        advance_mask = true;
       }
 
       // Advance frame index by predicted duration

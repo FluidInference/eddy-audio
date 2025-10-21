@@ -33,8 +33,10 @@ MelFeatures run_preprocessor(ParakeetImpl& impl, const AudioSegment& segment) {
     throw std::invalid_argument("Parakeet OpenVINO pipeline expects 16 kHz audio samples");
   }
 
-  // Detect static preprocessor input length (window size).
-  // 0 = dynamic length supported, >0 = fixed window size (process in chunks)
+  // Query preprocessor window size from model shape.
+  // Parakeet model has static shape [1, 160000], but OpenVINO may report it as
+  // dynamic depending on device compilation (especially CPU). When dynamic,
+  // window_samples=0 signals the lambda to use actual audio length.
   size_t window_samples = 0;
   const auto pshape = impl.preproc_model.input(0).get_partial_shape();
 

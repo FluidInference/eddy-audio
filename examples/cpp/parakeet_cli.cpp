@@ -17,13 +17,6 @@
 #include <string>
 #include <vector>
 
-#if defined(_WIN32)
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#endif
-
 void print_usage(const char* program_name) {
     std::cout << "Usage: " << program_name << " <audio.wav> [options]\n\n";
     std::cout << "Options:\n";
@@ -39,15 +32,12 @@ void print_usage(const char* program_name) {
 }
 
 int main(int argc, char* argv[]) {
-    // Force unbuffered output for debugging
+    // Force unbuffered output
     std::cout.setf(std::ios::unitbuf);
     std::cerr.setf(std::ios::unitbuf);
 
-    std::cerr << "[DEBUG] Program started, argc=" << argc << std::endl;
-
     // Parse command line arguments
     if (argc < 2) {
-        std::cerr << "[DEBUG] No args provided, showing usage" << std::endl;
         print_usage(argv[0]);
         return 1;
     }
@@ -106,14 +96,15 @@ int main(int argc, char* argv[]) {
         auto cache_model_dir = eddy::get_model_assets_dir("parakeet-v2");
         std::filesystem::path model_dir;
         std::string fetch_err;
-        if (!eddy::parakeet::ensure_models_available(cache_model_dir, &fetch_err)) {
+        if (!eddy::parakeet::check_models_available(cache_model_dir, &fetch_err)) {
             if (!fetch_err.empty()) std::cout << "[INFO] " << fetch_err << "\n";
         }
 
         // Prefer cache if encoder xml exists (minimum signal of a complete set)
         auto exists_nonempty = [](const std::filesystem::path& p) -> bool {
             std::error_code ec;
-            return std::filesystem::exists(p, ec) && std::filesystem::is_regular_file(p, ec) && std::filesystem::file_size(p, ec) > 0;
+            auto size = std::filesystem::file_size(p, ec);
+            return !ec && size > 0;
         };
         if (exists_nonempty(cache_model_dir / "parakeet_encoder.xml")) {
             model_dir = cache_model_dir;
@@ -181,7 +172,7 @@ int main(int argc, char* argv[]) {
         // Calculate metrics
         auto duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
         float audio_duration = audio_samples.size() / 16000.0f;
-        float rtfx = audio_duration / (duration_ms / 1000.0f);
+        float rtfx = (duration_ms > 0) ? audio_duration / (duration_ms / 1000.0f) : 0.0f;
 
         // Display results
         std::cout << "Result:\n";

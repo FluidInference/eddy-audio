@@ -84,7 +84,7 @@ public:
 
   InferenceResult infer(const AudioSegment& segment, const SegmentOptions& options) override;
 
-  std::string decode_tokens(const std::vector<int>& token_ids) override;
+  std::string decode_tokens(const std::vector<int>& token_ids) const override;
 
   void warmup();
 
@@ -92,7 +92,7 @@ public:
   struct Impl;
 
 private:
-  void ensure_compiled_model();
+  void ensure_compiled_model() const;
 
   std::unique_ptr<Impl> impl_;
 };

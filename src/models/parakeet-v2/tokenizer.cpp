@@ -19,18 +19,21 @@ void Tokenizer::load(const std::string& path, int blank_id) {
   nlohmann::json json;
   stream >> json;
 
+  // Find max token ID to size vocabulary array
   size_t max_id = 0;
   for (const auto& item : json.items()) {
     const size_t id = static_cast<size_t>(std::stoul(item.key()));
     max_id = std::max(max_id, id);
   }
 
+  // Populate vocabulary from JSON
   vocab_.assign(max_id + 1, std::string{});
   for (const auto& item : json.items()) {
     const size_t id = static_cast<size_t>(std::stoul(item.key()));
     vocab_[id] = item.value().get<std::string>();
   }
 
+  // Ensure blank token ID is within vocabulary range
   blank_id_ = blank_id;
   if (blank_id_ >= static_cast<int>(vocab_.size())) {
     vocab_.resize(static_cast<size_t>(blank_id_) + 1U);
@@ -87,12 +90,25 @@ size_t Tokenizer::vocab_size() const { return vocab_.size(); }
 int Tokenizer::blank_id() const { return blank_id_; }
 
 bool Tokenizer::is_punctuation(int token_id) const {
-  if (token_id < 0) return false;
+  if (token_id < 0) {
+    return false;
+  }
+
   const auto idx = static_cast<size_t>(token_id);
-  if (idx >= vocab_.size()) return false;
+  if (idx >= vocab_.size()) {
+    return false;
+  }
+
   std::string_view piece{vocab_[idx]};
-  if (piece.empty()) return false;
-  if (piece.starts_with(kWordBoundary)) piece.remove_prefix(kWordBoundary.size());
+  if (piece.empty()) {
+    return false;
+  }
+
+  // Remove SentencePiece word boundary marker if present
+  if (piece.starts_with(kWordBoundary)) {
+    piece.remove_prefix(kWordBoundary.size());
+  }
+
   return (piece == "." || piece == "?" || piece == "!");
 }
 

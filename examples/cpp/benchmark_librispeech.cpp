@@ -218,16 +218,9 @@ bool download_librispeech_dataset(const fs::path& dataset_parent_dir) {
 
     std::cout << "[OK] Downloaded " << (fs::file_size(tar_path) / (1024 * 1024)) << " MB\n\n";
 
-    // Extract tar.gz
+    // Extract tar.gz (tar is available on Windows 10+ and Unix)
     std::cout << "Extracting archive...\n";
-
-#ifdef _WIN32
-    // Windows: Use tar (available in Windows 10+)
     std::string tar_cmd = "tar -xzf \"" + tar_path.string() + "\" -C \"" + dataset_parent_dir.string() + "\"";
-#else
-    // Unix: Use tar
-    std::string tar_cmd = "tar -xzf \"" + tar_path.string() + "\" -C \"" + dataset_parent_dir.string() + "\"";
-#endif
 
     ret = std::system(tar_cmd.c_str());
     if (ret != 0) {
@@ -328,6 +321,28 @@ fs::path convert_flac_to_wav(const fs::path& flac_path) {
 }
 
 // ============================================================================
+// JSON Escaping Utility
+// ============================================================================
+
+std::string escape_json(const std::string& s) {
+    std::string result;
+    result.reserve(s.size());
+    for (char c : s) {
+        switch (c) {
+            case '"':  result += "\\\""; break;
+            case '\\': result += "\\\\"; break;
+            case '\n': result += "\\n"; break;
+            case '\r': result += "\\r"; break;
+            case '\t': result += "\\t"; break;
+            case '\b': result += "\\b"; break;
+            case '\f': result += "\\f"; break;
+            default:   result += c; break;
+        }
+    }
+    return result;
+}
+
+// ============================================================================
 // Benchmark Result Storage
 // ============================================================================
 
@@ -412,10 +427,10 @@ void save_results_json(const std::string& output_file, std::vector<BenchmarkResu
     for (size_t i = 0; i < results.size(); ++i) {
         const auto& r = results[i];
         out << "    {\n";
-        out << "      \"file_id\": \"" << r.file_id << "\",\n";
-        out << "      \"audio_path\": \"" << r.audio_path << "\",\n";
-        out << "      \"hypothesis\": \"" << r.hypothesis << "\",\n";
-        out << "      \"reference\": \"" << r.reference << "\",\n";
+        out << "      \"file_id\": \"" << escape_json(r.file_id) << "\",\n";
+        out << "      \"audio_path\": \"" << escape_json(r.audio_path) << "\",\n";
+        out << "      \"hypothesis\": \"" << escape_json(r.hypothesis) << "\",\n";
+        out << "      \"reference\": \"" << escape_json(r.reference) << "\",\n";
         out << std::fixed << std::setprecision(2);
         out << "      \"wer_percent\": " << (r.wer * 100) << ",\n";
         out << "      \"cer_percent\": " << (r.cer * 100) << ",\n";
@@ -448,7 +463,7 @@ void save_results_json(const std::string& output_file, std::vector<BenchmarkResu
                 out << "          \"tokens_appended\": " << c.tokens_appended << ",\n";
                 out << "          \"skip_prefix\": " << c.skip_prefix << ",\n";
                 out << "          \"holdback\": " << c.holdback << ",\n";
-                out << "          \"text\": \"" << c.text << "\"\n";
+                out << "          \"text\": \"" << escape_json(c.text) << "\"\n";
                 out << "        }";
                 if (j + 1 < r.chunks.size()) out << ",";
                 out << "\n";
@@ -570,12 +585,14 @@ int main(int argc, char* argv[]) {
         fs::path model_dir;
 
         auto exists_nonempty = [](const fs::path& p) -> bool {
-            std::error_code ec; return fs::exists(p, ec) && fs::is_regular_file(p, ec) && fs::file_size(p, ec) > 0;
+            std::error_code ec;
+            auto size = fs::file_size(p, ec);
+            return !ec && size > 0;
         };
 
         {
             std::string fetch_err;
-            (void)eddy::parakeet::ensure_models_available(cache_model_dir, &fetch_err);
+            (void)eddy::parakeet::check_models_available(cache_model_dir, &fetch_err);
             if (!fetch_err.empty()) std::cout << "[INFO] " << fetch_err << "\n";
         }
 
@@ -759,11 +776,14 @@ int main(int argc, char* argv[]) {
             avg_cer += r.cer;
             wer_values.push_back(r.wer);
         }
-        avg_wer /= results.size();
-        avg_cer /= results.size();
+
+        if (!results.empty()) {
+            avg_wer /= results.size();
+            avg_cer /= results.size();
+        }
 
         std::sort(wer_values.begin(), wer_values.end());
-        float median_wer = wer_values[wer_values.size() / 2];
+        float median_wer = wer_values.empty() ? 0.0f : wer_values[wer_values.size() / 2];
         float overall_rtfx = total_audio_duration / total_processing_time;
 
         std::cout << "\n" << std::string(80, '=') << "\n";

@@ -200,84 +200,12 @@ def find_eddy_c_lib() -> Path:
     )
 
 
-def renormalize_json(json_path: str, output_path: str = None):
-    """Re-normalize an existing benchmark JSON file with OpenAI Whisper normalizer"""
-    import json
-
-    print(f"Loading results from: {json_path}")
-    with open(json_path) as f:
-        data = json.load(f)
-
-    per_file = data.get("per_file_results", [])
-    print(f"Re-normalizing {len(per_file)} results with OpenAI Whisper normalizer...")
-
-    total_edits = 0
-    total_words = 0
-    wer_values = []
-
-    for i, result in enumerate(per_file):
-        ref = result.get("reference", "")
-        hyp = result.get("hypothesis", "")
-
-        # Recalculate WER with proper normalization
-        wer_metrics = calculate_wer(hyp, ref)
-
-        # Store original WER
-        result["wer_original"] = result.get("wer", 0.0)
-        result["wer"] = wer_metrics["wer"]
-
-        # Update normalized text
-        result["reference_normalized"] = normalize_text(ref)
-        result["hypothesis_normalized"] = normalize_text(hyp)
-
-        # Track totals
-        ref_words = len(normalize_text(ref).split())
-        total_edits += wer_metrics["substitutions"] + wer_metrics["deletions"] + wer_metrics["insertions"]
-        total_words += ref_words
-        wer_values.append(wer_metrics["wer"])
-
-        if (i + 1) % 100 == 0:
-            print(f"  [{i+1}/{len(per_file)}] Processed...")
-
-    # Calculate new metrics
-    overall_wer = (total_edits / total_words * 100) if total_words > 0 else 0.0
-    median_wer = sorted(wer_values)[len(wer_values) // 2] if wer_values else 0.0
-
-    # Update metrics
-    if "metrics" not in data:
-        data["metrics"] = {}
-
-    data["metrics"]["overall_wer_original"] = data["metrics"].get("overall_wer", 0.0)
-    data["metrics"]["overall_wer"] = overall_wer
-    data["metrics"]["median_wer"] = median_wer
-    data["metrics"]["normalization"] = "OpenAI Whisper English"
-
-    # Save
-    if output_path is None:
-        output_path = json_path.replace(".json", "_normalized.json")
-
-    print(f"Saving to: {output_path}")
-    with open(output_path, 'w') as f:
-        json.dump(data, f, indent=2)
-
-    # Print summary
-    print("\n" + "=" * 80)
-    print("RE-NORMALIZATION SUMMARY")
-    print("=" * 80)
-    print(f"Files processed:      {len(per_file)}")
-    print(f"Original WER:         {data['metrics']['overall_wer_original']:.2f}%")
-    print(f"Normalized WER:       {overall_wer:.2f}%")
-    print(f"Median WER:           {median_wer:.2f}%")
-    print(f"Improvement:          {data['metrics']['overall_wer_original'] - overall_wer:.2f}%")
-    print("=" * 80)
-
-
 def main():
     ap = argparse.ArgumentParser(description="Parakeet LibriSpeech benchmark via C API")
     ap.add_argument("--lib", default=None, help="Path to eddy_c shared library (auto-detected if not specified)")
     ap.add_argument("--device", default="CPU", help="Device: CPU/GPU/NPU/AUTO (default: CPU)")
     ap.add_argument("--model-dir", default=None, help="Directory with parakeet model files (defaults to Eddy cache)")
-    ap.add_argument("--max-files", default=50, help="Max files to evaluate (default: 50, use 'all' for 2620)")
+    ap.add_argument("--max-files", type=str, default="50", help="Max files to evaluate (default: 50, use 'all' for full dataset)")
     ap.add_argument("--dataset-config", default="clean", help="HF datasets config (default: clean)")
     ap.add_argument("--split", default="test", help="HF datasets split (default: test)")
     ap.add_argument("--output", default="eddy_benchmark_results.json", help="Output JSON file")
@@ -285,11 +213,10 @@ def main():
     args = ap.parse_args()
 
     # Handle 'all' for max-files
-    if isinstance(args.max_files, str):
-        if args.max_files.lower() == "all":
-            args.max_files = 999999  # Will be capped by dataset size
-        else:
-            args.max_files = int(args.max_files)  # Convert string number to int
+    if args.max_files.lower() == "all":
+        args.max_files = float('inf')  # Will be capped by dataset size
+    else:
+        args.max_files = int(args.max_files)
 
     # Rebuild C++ library unless --no-rebuild is specified
     if not args.no_rebuild:
@@ -375,10 +302,15 @@ def main():
     print("=" * 80)
 
     results = []
-    total_edits = 0
-    total_words = 0
-    total_original_edits = 0
-    total_original_words = 0
+
+    # C++ normalization totals (lowercase + remove punctuation)
+    total_cpp_edits = 0
+    total_cpp_words = 0
+
+    # Whisper normalization totals (full OpenAI normalization)
+    total_whisper_edits = 0
+    total_whisper_words = 0
+
     total_audio_duration = 0.0
     total_processing_time = 0.0
     start_time = time.time()
@@ -396,9 +328,10 @@ def main():
             import soundfile as sf
             pcm, sr = sf.read(audio_path, dtype='float32')
             if sr != 16000:
-                # Resample if needed (shouldn't happen with LibriSpeech)
-                from scipy import signal
-                pcm = signal.resample(pcm, int(len(pcm) * 16000 / sr))
+                raise ValueError(
+                    f"Expected 16kHz audio, got {sr}Hz for {file_id}. "
+                    f"LibriSpeech should be 16kHz. Please check the audio file."
+                )
         else:
             # HuggingFace dataset format
             pcm = np.asarray(audio_path["array"], dtype=np.float32)
@@ -439,13 +372,13 @@ def main():
         wer_metrics = calculate_wer(hyp, ref)
 
         # Track totals (C++ style normalization)
-        total_original_edits += cpp_output.substitutions + cpp_output.deletions + cpp_output.insertions
-        total_original_words += cpp_output.substitutions + cpp_output.deletions + cpp_output.hits
+        total_cpp_edits += cpp_output.substitutions + cpp_output.deletions + cpp_output.insertions
+        total_cpp_words += cpp_output.substitutions + cpp_output.deletions + cpp_output.hits
 
         # Track totals (OpenAI Whisper normalization)
         ref_words = len(normalize_text(ref).split())
-        total_edits += wer_metrics["substitutions"] + wer_metrics["deletions"] + wer_metrics["insertions"]
-        total_words += ref_words
+        total_whisper_edits += wer_metrics["substitutions"] + wer_metrics["deletions"] + wer_metrics["insertions"]
+        total_whisper_words += ref_words
 
         total_audio_duration += audio_duration
         total_processing_time += res.latency_ms / 1000.0
@@ -471,7 +404,7 @@ def main():
 
         # Progress update
         if (i + 1) % 10 == 0 or i == n - 1:
-            current_wer = (total_edits / max(1, total_words)) * 100
+            current_wer = (total_whisper_edits / max(1, total_whisper_words)) * 100
             current_rtfx = total_audio_duration / max(0.001, total_processing_time)
             print(f"[{i+1}/{n}] WER: {current_wer:.2f}%  RTFx: {current_rtfx:.1f}x  Last: {wer_metrics['wer']:.2f}%")
 
@@ -479,8 +412,8 @@ def main():
 
     # Calculate final metrics
     elapsed_time = time.time() - start_time
-    overall_wer = (total_edits / max(1, total_words)) * 100
-    overall_wer_original = (total_original_edits / max(1, total_original_words)) * 100
+    overall_wer_whisper = (total_whisper_edits / max(1, total_whisper_words)) * 100
+    overall_wer_cpp = (total_cpp_edits / max(1, total_cpp_words)) * 100
     overall_rtfx = total_audio_duration / max(0.001, total_processing_time)
 
     # Compute per-file WER statistics
@@ -498,8 +431,8 @@ def main():
             "num_files": n,
         },
         "metrics": {
-            "overall_wer": overall_wer,
-            "overall_wer_cpp": overall_wer_original,
+            "overall_wer": overall_wer_whisper,
+            "overall_wer_cpp": overall_wer_cpp,
             "median_wer": median_wer,
             "overall_rtfx": overall_rtfx,
             "total_audio_duration_sec": total_audio_duration,
@@ -519,8 +452,8 @@ def main():
     print("BENCHMARK SUMMARY")
     print("=" * 80)
     print(f"Files processed:      {n}")
-    print(f"Overall WER (C++):    {overall_wer_original:.2f}%")
-    print(f"Overall WER (norm):   {overall_wer:.2f}% (OpenAI Whisper normalized)")
+    print(f"Overall WER (C++):    {overall_wer_cpp:.2f}%")
+    print(f"Overall WER (norm):   {overall_wer_whisper:.2f}% (OpenAI Whisper normalized)")
     print(f"Median WER:           {median_wer:.2f}%")
     print(f"Overall RTFx:         {overall_rtfx:.1f}x")
     print(f"Total audio:          {total_audio_duration:.1f}s")

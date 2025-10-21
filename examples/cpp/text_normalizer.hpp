@@ -11,6 +11,8 @@
 #include <cctype>
 #include <fstream>
 #include <algorithm>
+#include <limits>
+#include <iostream>
 
 #include "nlohmann/json.hpp"
 
@@ -70,14 +72,19 @@ public:
                     variants_[key] = val;
                 }
             }
+        } catch (const std::exception& e) {
+            if (std::getenv("EDDY_DEBUG")) {
+                std::cerr << "[DEBUG] Failed to load variants dictionary: " << e.what() << "\n";
+            }
         } catch (...) {
-            // Ignore dictionary load errors silently; normalization still works.
+            // Ignore unknown errors; normalization still works without variants
         }
     }
 
 private:
     std::unordered_map<std::string, std::string> abbreviations_;
     std::unordered_map<std::string, std::string> contractions_;
+    std::unordered_map<std::string, std::regex> contraction_patterns_;
     std::unordered_map<std::string, std::string> variants_;
 
     void initialize_mappings() {
@@ -159,13 +166,19 @@ private:
             {"why's", "why is"},
             {"how's", "how is"}
         };
+
+        // Pre-compile regex patterns for contractions (performance optimization)
+        for (const auto& [contraction, expansion] : contractions_) {
+            contraction_patterns_[contraction] =
+                std::regex("\\b" + contraction + "\\b", std::regex_constants::icase);
+        }
     }
 
     std::string to_lowercase(const std::string& text) const {
         std::string result;
         result.reserve(text.size());
         for (char c : text) {
-            result += std::tolower(c);
+            result += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         }
         return result;
     }
@@ -189,6 +202,10 @@ private:
         };
 
         if (num < 0) {
+            // Handle INT_MIN overflow case
+            if (num == std::numeric_limits<int>::min()) {
+                return "negative two billion one hundred forty seven million four hundred eighty three thousand six hundred forty eight";
+            }
             return "negative " + number_to_words(-num);
         }
 
@@ -230,7 +247,7 @@ private:
     }
 
     std::string expand_numbers(const std::string& text) const {
-        std::regex number_pattern(R"(\b(\d+)(?:\s*[-–]\s*(\d+))?\b)");
+        static const std::regex number_pattern(R"(\b(\d+)(?:\s*[-–]\s*(\d+))?\b)");
         std::string result = text;
         std::smatch match;
 
@@ -246,7 +263,9 @@ private:
                 // Handle years in common range
                 if (num1 >= 2000) {
                     // 2023 -> "two thousand twenty three"
-                    replacement = "two thousand " + (num1 % 100 > 0 ? number_to_words(num1 % 100) : "");
+                    replacement = (num1 % 100 > 0)
+                        ? "two thousand " + number_to_words(num1 % 100)
+                        : "two thousand";
                 } else {
                     // 1984 -> "nineteen eighty four"
                     int century = num1 / 100;
@@ -266,7 +285,7 @@ private:
     }
 
     std::string expand_abbreviations(const std::string& text) const {
-        std::regex word_pattern(R"(\b[a-z]+\.?\b)");
+        static const std::regex word_pattern(R"(\b[a-z]+\.?\b)");
         std::string result;
         std::sregex_iterator it(text.begin(), text.end(), word_pattern);
         std::sregex_iterator end;
@@ -301,8 +320,7 @@ private:
         std::string result = text;
 
         for (const auto& [contraction, expansion] : contractions_) {
-            std::regex pattern("\\b" + contraction + "\\b", std::regex_constants::icase);
-            result = std::regex_replace(result, pattern, expansion);
+            result = std::regex_replace(result, contraction_patterns_.at(contraction), expansion);
         }
 
         return result;
@@ -388,7 +406,8 @@ private:
     // Sanitize tokens loaded from JSON (strip trivial HTML fragments, punctuation around word)
     static void sanitize_token(std::string& s) {
         // Remove any simple HTML tags like </span>
-        s = std::regex_replace(s, std::regex(R"(<[^>]*>)"), "");
+        static const std::regex html_pattern(R"(<[^>]*>)");
+        s = std::regex_replace(s, html_pattern, "");
         // Trim surrounding whitespace
         auto not_space = [](int ch){ return !std::isspace(ch); };
         s.erase(s.begin(), std::find_if(s.begin(), s.end(), not_space));

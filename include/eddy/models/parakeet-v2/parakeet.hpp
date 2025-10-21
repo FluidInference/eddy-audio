@@ -33,10 +33,10 @@ struct SegmentOptions {
 };
 
 struct AudioSegment {
-  std::vector<float> pcm;
-  std::vector<float> features;
-  size_t sample_rate = 16000;
-  double timestamp_seconds = 0.0;
+  std::vector<float> pcm;          // Raw audio samples
+  std::vector<float> features;     // Pre-computed mel spectrogram features (optional, computed if empty)
+  size_t sample_rate = 16000;      // Sample rate in Hz (must be 16kHz for Parakeet)
+  double timestamp_seconds = 0.0;  // Starting timestamp for this segment
 };
 
 /// Token timing information for a single decoded token
@@ -80,13 +80,23 @@ struct InferenceResult {
 
 class IParakeetModel {
 public:
-  virtual ~IParakeetModel() = default;
+  virtual ~IParakeetModel() noexcept = default;
+
+  // Prevent copying and moving (use shared_ptr/unique_ptr instead)
+  IParakeetModel(const IParakeetModel&) = delete;
+  IParakeetModel& operator=(const IParakeetModel&) = delete;
+  IParakeetModel(IParakeetModel&&) = delete;
+  IParakeetModel& operator=(IParakeetModel&&) = delete;
+
   virtual InferenceResult infer(const AudioSegment& segment, const SegmentOptions& options) = 0;
 
   /// Decode token IDs to text using the tokenizer
   /// @param token_ids Vector of token IDs to decode
   /// @return Decoded text string
-  virtual std::string decode_tokens(const std::vector<int>& token_ids) = 0;
+  virtual std::string decode_tokens(const std::vector<int>& token_ids) const = 0;
+
+protected:
+  IParakeetModel() = default;
 };
 
 }  // namespace eddy::parakeet

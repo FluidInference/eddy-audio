@@ -15,14 +15,13 @@ This doc captures the practical gotchas we hit while running the C++ benchmark a
 - No OpenVINO env needed, just run:
   - `build\examples\cpp\Release\benchmark_librispeech.exe --max-files 5 --device CPU`
 
-### Quick Start (Python via C ABI)
+### Quick Start (Python Benchmark)
 
-- Build the C API shim and ensure models are fetched:
-  - `cmake --build build --config Release --target eddy eddy_c`
-  - Models auto-download on first run (or run `hf_fetch_models.exe` manually)
-- Install Python deps: `pip install datasets jiwer numpy`
-- Run:
-  - `python scripts\bench_parakeet_ctypes.py --lib build\Release\eddy_c.dll --device CPU --max 25`
+- Install Python deps:
+  - `cd benchmarks && uv sync`
+- Run benchmark (automatically rebuilds C++ if needed):
+  - `cd benchmarks && uv run benchmark.py --max-files 25 --device CPU`
+- Note: The Python benchmark uses the native C++ library via the parakeet_cli executable, not the C ABI
 
 ### PowerShell Quoting (Important)
 
@@ -95,7 +94,7 @@ This doc captures the practical gotchas we hit while running the C++ benchmark a
 ### Agent Notes (for automated coding agents)
 
 - Always run NPU benchmarks via `run_bench_npu.bat` or through `setupvars.bat`.
-- On code changes under `src/models/parakeet/`:
+- On code changes under `src/models/parakeet-v2/`:
   - Clear compiled cache (keep `files/`) as per `AGENTS.md`.
   - Rebuild: `cmake --build build --config Release --target eddy parakeet_cli benchmark_librispeech`.
   - If OpenVINO not found: set `OpenVINO_DIR` to `C:\\Program Files (x86)\\Intel\\openvino_2025.0.0\\runtime\\cmake`.

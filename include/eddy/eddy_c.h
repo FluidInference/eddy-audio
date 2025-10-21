@@ -4,6 +4,28 @@
 /**
  * @file eddy_c.h
  * @brief C API for Eddy SDK - enables language bindings (C#, etc.)
+ *
+ * ## Thread Safety
+ * - All functions are thread-safe unless otherwise noted
+ * - Pipeline/model handles can be used from multiple threads concurrently
+ * - Exception: eddy_whisper_set_language/set_task are NOT thread-safe with concurrent inference
+ *
+ * ## Error Handling
+ * - Functions returning EddyError: On error, output parameters (result) are zeroed/not modified
+ * - Functions returning handles: Return NULL on error, check error_message for details
+ * - error_message parameters: Always call eddy_free_string() even if function succeeds
+ *
+ * ## Memory Management
+ * - All strings/results allocated by Eddy must be freed by caller
+ * - Use eddy_whisper_free_result() to free EddyWhisperResult (frees all nested strings)
+ * - Use eddy_parakeet_free_result() to free EddyParakeetResult
+ * - Use eddy_free_string() for standalone strings only
+ * - Do NOT call eddy_free_string() on strings inside results freed by eddy_*_free_result()
+ *
+ * ## Null Safety
+ * - Handle parameters (EddyWhisperPipeline, EddyParakeetModel) must NOT be NULL
+ * - Passing NULL handles results in EDDY_ERROR_INVALID_ARGUMENT or undefined behavior
+ * - Output parameters (result, error_message) can be NULL if you don't need them
  */
 
 #ifndef EDDY_C_H
@@ -17,6 +39,7 @@ extern "C" {
 #include <stdbool.h>
 
 // Platform-specific exports
+// Note: Define EDDY_BUILD_SHARED only when building the Eddy library itself, not when using it
 #ifdef _WIN32
   #ifdef EDDY_BUILD_SHARED
     #define EDDY_API __declspec(dllexport)
@@ -46,19 +69,27 @@ typedef struct {
 
 /**
  * @brief A chunk of transcribed text with timestamps
+ *
+ * Note: Individual chunk.text pointers are managed by EddyWhisperResult
+ * Do NOT call eddy_free_string() on chunk.text - use eddy_whisper_free_result() instead
  */
 typedef struct {
     float start_ts;
     float end_ts;
-    char* text;  // Must be freed by caller using eddy_free_string
+    char* text;  // Owned by EddyWhisperResult, freed by eddy_whisper_free_result()
 } EddyWhisperChunk;
 
 /**
  * @brief Result from Whisper transcription
+ *
+ * Resource ownership:
+ * - Call eddy_whisper_free_result() to free the entire result
+ * - This frees result.text, result.chunks array, and all chunk.text strings
+ * - Do NOT manually free individual strings - eddy_whisper_free_result() handles everything
  */
 typedef struct {
-    char* text;                   // Full transcribed text, must be freed by caller
-    EddyWhisperChunk* chunks;     // Array of chunks, must be freed by caller
+    char* text;                   // Full transcribed text
+    EddyWhisperChunk* chunks;     // Array of chunks
     size_t num_chunks;
     float confidence;
     double inference_duration_ms;

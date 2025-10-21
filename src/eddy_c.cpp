@@ -291,7 +291,7 @@ EDDY_API EddyParakeetModel eddy_parakeet_create(EddyParakeetConfig config, char*
         } else {
             model_dir = eddy::get_model_assets_dir("parakeet-v2");
             std::string err;
-            (void)eddy::parakeet::ensure_models_available(model_dir, &err);
+            (void)eddy::parakeet::check_models_available(model_dir, &err);
 #if defined(_WIN32)
             if (!std::filesystem::exists(model_dir)) {
                 auto legacy = eddy::get_app_data_dir() / "cache" / "models" / "parakeet-v2" / "files";

@@ -64,4 +64,28 @@ ov::CompiledModel compile_component(ov::Core& core, const ModelFile& file, const
   return core.compile_model(file.path, device);
 }
 
+ov::CompiledModel compile_with_npu_fallback(ov::Core& core,
+                                            const ModelFile& file,
+                                            const std::string& device,
+                                            const char* component_name) {
+  const bool target_npu = (device == "NPU");
+
+  if (!target_npu) {
+    return compile_component(core, file, device);
+  }
+
+  try {
+    return compile_component(core, file, "NPU");
+  } catch (const std::exception&) {
+    if (std::getenv("EDDY_DEBUG")) {
+      std::cerr << "[DEBUG] NPU compile failed";
+      if (component_name) {
+        std::cerr << " for " << component_name;
+      }
+      std::cerr << ", using CPU\n";
+    }
+    return compile_component(core, file, "CPU");
+  }
+}
+
 }  // namespace eddy::parakeet

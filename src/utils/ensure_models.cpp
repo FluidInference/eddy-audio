@@ -14,9 +14,9 @@ static bool file_nonempty(const std::filesystem::path& p) {
          std::filesystem::file_size(p, ec) > 0;
 }
 
-bool ensure_models_available(const std::filesystem::path& target_dir,
-                             std::string* last_error,
-                             const std::vector<std::string>& required) {
+bool check_models_available(const std::filesystem::path& target_dir,
+                            std::string* last_error,
+                            const std::vector<std::string>& required) {
   // Check if all required files exist
   std::vector<std::string> missing;
   for (const auto& f : required) {

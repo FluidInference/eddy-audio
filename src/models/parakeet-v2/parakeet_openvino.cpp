@@ -307,19 +307,18 @@ OpenVINOParakeet::OpenVINOParakeet(std::shared_ptr<eddy::OpenVINOBackend> backen
 
 OpenVINOParakeet::~OpenVINOParakeet() = default;
 
-std::string OpenVINOParakeet::decode_tokens(const std::vector<int>& token_ids) {
+std::string OpenVINOParakeet::decode_tokens(const std::vector<int>& token_ids) const {
   ensure_compiled_model();
   return impl_->tokenizer.decode(token_ids);
 }
 
-void OpenVINOParakeet::ensure_compiled_model() {
+void OpenVINOParakeet::ensure_compiled_model() const {
   std::call_once(impl_->compile_once, [this]() {
     // ========================================
     // Device configuration
     // ========================================
     auto& core = impl_->backend->core();
     const std::string device = impl_->runtime_cfg.device.empty() ? "AUTO" : impl_->runtime_cfg.device;
-    const bool target_npu = (device == "NPU");
 
     // ========================================
     // Compile preprocessor (mel spectrogram)
@@ -336,28 +335,13 @@ void OpenVINOParakeet::ensure_compiled_model() {
     // ========================================
     // Compile encoder, decoder, and joint models
     // ========================================
-    auto compile_with_npu_fallback = [&](const ModelFile& file, const char* name) -> ov::CompiledModel {
-      if (!target_npu) {
-        return compile_component(core, file, device);
-      }
-
-      try {
-        return compile_component(core, file, "NPU");
-      } catch (const std::exception&) {
-        if (std::getenv("EDDY_DEBUG")) {
-          std::cerr << "[DEBUG] NPU compile failed for " << name << ", using CPU\n";
-        }
-        return compile_component(core, file, "CPU");
-      }
-    };
-
-    impl_->encoder_model = compile_with_npu_fallback(impl_->model_paths.encoder, "encoder");
+    impl_->encoder_model = compile_with_npu_fallback(core, impl_->model_paths.encoder, device, "encoder");
     impl_->encoder_request = impl_->encoder_model.create_infer_request();
 
-    impl_->decoder_model = compile_with_npu_fallback(impl_->model_paths.decoder, "decoder");
+    impl_->decoder_model = compile_with_npu_fallback(core, impl_->model_paths.decoder, device, "decoder");
     impl_->decoder_request = impl_->decoder_model.create_infer_request();
 
-    impl_->joint_model = compile_with_npu_fallback(impl_->model_paths.joint, "joint");
+    impl_->joint_model = compile_with_npu_fallback(core, impl_->model_paths.joint, device, "joint");
     impl_->joint_request = impl_->joint_model.create_infer_request();
 
     // ========================================
