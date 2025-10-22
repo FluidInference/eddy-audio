@@ -34,7 +34,7 @@
 
 - Commits: imperative subject with optional scope (e.g., `parakeet: fix encoder port selection`).
 - Keep changes focused; include rationale and before/after behavior.
-- PRs should include summary, reproduction/validation steps, logs or screenshots, target device (CPU/GPU/NPU), and linked issues.
+- PRs should include summary, reproduction/validation steps, logs or screenshots, target device (CPU/NPU), and linked issues.
 
 ## Agent-Specific Instructions (Parakeet/OpenVINO)
 

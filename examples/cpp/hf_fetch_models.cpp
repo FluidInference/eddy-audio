@@ -64,14 +64,13 @@ std::string get_cache_dir(const std::string& cache_subdir) {
 void print_usage(const char* prog) {
     std::cout << "Usage: " << prog << " [OPTIONS]\n\n";
     std::cout << "Options:\n";
-    std::cout << "  --model <name>      Model name (v2, v3) (default: v2)\n";
+    std::cout << "  --model <name>      Model name (default: parakeet-v2)\n";
     std::cout << "  --repo <repo_id>    Override HuggingFace repository\n";
     std::cout << "  --target <dir>      Target directory (default: cache directory)\n";
     std::cout << "  --files <list>      Comma-separated list of files to download\n";
     std::cout << "  --help              Show this help\n\n";
     std::cout << "Examples:\n";
-    std::cout << "  " << prog << " --model v2\n";
-    std::cout << "  " << prog << " --model v3\n";
+    std::cout << "  " << prog << " --model parakeet-v2\n";
     std::cout << "  " << prog << " --repo FluidInference/parakeet-tdt-0.6b-v2-ov\n";
 }
 
@@ -95,7 +94,7 @@ int main(int argc, char** argv) {
                 config = it->second;
             } else {
                 std::cerr << "ERROR: Unknown model: " << model_name << "\n";
-                std::cerr << "Available models: v2, v3, parakeet-v2, parakeet-v3\n";
+                std::cerr << "Available models: parakeet-v2\n";
                 return 1;
             }
         }

@@ -21,14 +21,14 @@ void print_usage(const char* program_name) {
     std::cout << "Usage: " << program_name << " <audio.wav> [options]\n\n";
     std::cout << "Options:\n";
     std::cout << "  --device <device>    OpenVINO device (default: CPU)\n";
-    std::cout << "                       Options: CPU, GPU, AUTO\n";
+    std::cout << "                       Options: CPU, AUTO\n";
     std::cout << "  --help              Show this help message\n\n";
     std::cout << "Requirements:\n";
     std::cout << "  - Audio must be 16kHz mono or stereo WAV file\n";
     std::cout << "  - Models will be loaded from cache or models/parakeet/\n\n";
     std::cout << "Example:\n";
     std::cout << "  " << program_name << " test.wav\n";
-    std::cout << "  " << program_name << " test.wav --device GPU\n";
+    std::cout << "  " << program_name << " test.wav --device AUTO\n";
 }
 
 int main(int argc, char* argv[]) {
@@ -215,7 +215,7 @@ int main(int argc, char* argv[]) {
         } else if (rtfx >= 1.0f) {
             std::cout << "✅ Performance: Good (processing faster than real-time)\n";
         } else {
-            std::cout << "⚠️  Performance: Below real-time (consider GPU device or optimizations)\n";
+            std::cout << "⚠️  Performance: Below real-time (consider optimizations)\n";
         }
 
         std::cout << "\n" << std::string(70, '=') << "\n";
@@ -231,7 +231,7 @@ int main(int argc, char* argv[]) {
         std::cerr << "  2. Check models are in: " << eddy::get_model_assets_dir("parakeet-v2").string() << "\n";
         std::cerr << "     or in: models/parakeet/\n";
         std::cerr << "  3. Verify OpenVINO runtime is properly installed\n";
-        std::cerr << "  4. Try --device CPU if GPU fails\n";
+        std::cerr << "  4. Try --device CPU if AUTO fails\n";
         return 1;
     }
 }

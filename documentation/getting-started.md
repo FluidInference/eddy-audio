@@ -7,7 +7,7 @@ It focuses on the OpenVINO backend while additional native runtime guides are pr
 
 ### Hardware Requirements
 - Intel Core Ultra processor with NPU (recommended)
-- Alternatively: Any x86_64 CPU (will use CPU/GPU inference)
+- Alternatively: Any x86_64 CPU (will use CPU inference)
 - 8GB+ RAM
 - 2GB+ free disk space for models
 

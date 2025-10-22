@@ -19,14 +19,14 @@ eddy is a high-performance, embeddable inference SDK built for native runtimes. 
 - Whisper Speech Recognition — OpenAI's Whisper large-v3-turbo model
 - Intel NPU Acceleration — 6x faster inference than CPU
 - Model Caching — 55x faster startup after first run
-- Multi-Device Support — NPU, CPU, GPU, AUTO
+- Multi-Device Support — NPU, CPU, AUTO
 - Language Bindings — C# (Rust, Kotlin, Flutter planned)
 - Timestamp Support — Word/segment-level timestamps
 - Multi-Language — Support for 99+ languages
 
 ### Supported Platforms
 - Windows 11 (Intel Core Ultra with NPU)
-- Windows 10 (CPU/GPU fallback)
+- Windows 10 (CPU fallback)
 - Linux (planned)
 
 ### Requirements

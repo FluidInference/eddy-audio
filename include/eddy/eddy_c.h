@@ -59,7 +59,7 @@ typedef void* EddyParakeetModel;
  */
 typedef struct {
     const char* model_path;
-    const char* device;           // "NPU", "CPU", "GPU", "AUTO"
+    const char* device;           // "NPU", "CPU", "AUTO"
     const char* language;         // "en", "zh", "auto", etc.
     const char* task;             // "transcribe" or "translate"
     bool return_timestamps;
@@ -206,7 +206,7 @@ EDDY_API void eddy_free_string(char* str);
 // -----------------------------
 
 typedef struct {
-    const char* device;      // "CPU", "GPU", "NPU", or "AUTO"
+    const char* device;      // "CPU", "NPU", or "AUTO"
     const char* model_dir;   // Directory containing parakeet_*.xml/bin/json; NULL to use Eddy cache
     int blank_token_id;      // Typically 1024
 } EddyParakeetConfig;

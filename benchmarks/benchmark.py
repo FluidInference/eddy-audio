@@ -187,7 +187,6 @@ def find_eddy_c_lib() -> Path:
         project_root / "build/Release/eddy_c.dll",  # Windows
         project_root / "build/Debug/eddy_c.dll",
         project_root / "build/libeddy_c.so",  # Linux
-        project_root / "build/libeddy_c.dylib",  # macOS
     ]
 
     for path in candidates:

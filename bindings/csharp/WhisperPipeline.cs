@@ -18,7 +18,7 @@ public class WhisperConfig
     public required string ModelPath { get; set; }
 
     /// <summary>
-    /// Device to run inference on: "NPU", "CPU", "GPU", or "AUTO"
+    /// Device to run inference on: "NPU", "CPU", or "AUTO"
     /// </summary>
     public string Device { get; set; } = "NPU";
 

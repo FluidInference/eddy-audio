@@ -71,9 +71,6 @@ uv run benchmark.py --no-rebuild
 # Use NPU (Neural Processing Unit)
 uv run benchmark.py --max-files 100 --device NPU
 
-# Use GPU
-uv run benchmark.py --max-files 100 --device GPU
-
 # Custom library path (implies --no-rebuild)
 uv run benchmark.py --lib build/Release/eddy_c.dll
 

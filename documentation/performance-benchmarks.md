@@ -284,5 +284,4 @@ config.cache_dir = "./cache";  // Persistent cache
 - [ ] Parallel batch inference
 - [ ] Streaming audio support (real-time transcription)
 - [ ] Model compression (400-500MB target)
-- [ ] GPU acceleration option
 - [ ] ARM/Qualcomm NPU support

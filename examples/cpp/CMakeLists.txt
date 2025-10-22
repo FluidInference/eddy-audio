@@ -7,13 +7,8 @@ endif()
 add_executable(parakeet_cli parakeet_cli.cpp)
 target_link_libraries(parakeet_cli PRIVATE eddy)
 
-add_executable(benchmark_librispeech benchmark_librispeech.cpp)
-target_link_libraries(benchmark_librispeech PRIVATE eddy)
-# Ensure nlohmann/json single-header is visible to example headers
-target_include_directories(benchmark_librispeech PRIVATE ${CMAKE_SOURCE_DIR}/third_party)
-
 add_executable(hf_fetch_models hf_fetch_models.cpp)
 # Include eddy headers for model_configs.hpp
 target_include_directories(hf_fetch_models PRIVATE ${CMAKE_SOURCE_DIR}/include)
 
-install(TARGETS parakeet_cli benchmark_librispeech hf_fetch_models DESTINATION bin)
+install(TARGETS parakeet_cli hf_fetch_models DESTINATION bin)
