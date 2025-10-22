@@ -8,7 +8,9 @@
 
 namespace eddy::parakeet {
 
-static constexpr std::string_view kWordBoundary = "\xE2\x96\x81"; // SentencePiece space marker
+// SentencePiece word boundary marker (U+2581 "▁" Lower One Eighth Block)
+// This character appears at the start of words in the tokenized output
+static constexpr std::string_view kWordBoundary = "▁";
 
 void Tokenizer::load(const std::string& path, int blank_id) {
   std::ifstream stream(path);

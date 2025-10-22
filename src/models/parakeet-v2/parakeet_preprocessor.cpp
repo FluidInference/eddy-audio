@@ -44,10 +44,17 @@ MelFeatures run_preprocessor(ParakeetImpl& impl, const AudioSegment& segment) {
     throw std::invalid_argument("Parakeet OpenVINO pipeline expects 16 kHz audio samples");
   }
 
-  // Query preprocessor window size from model shape.
-  // Parakeet model has static shape [1, 160000], but OpenVINO may report it as
-  // dynamic depending on device compilation (especially CPU). When dynamic,
-  // window_samples=0 signals the lambda to use actual audio length.
+  // Query preprocessor window size from compiled model shape.
+  // The Parakeet ONNX model always has static shape [1, 160000], but OpenVINO
+  // may compile it with dynamic shapes for optimization (especially on CPU).
+  //
+  // window_samples = 160000 → Static compilation, use fixed-size windows
+  // window_samples = 0      → Dynamic compilation, create tensor sized to actual audio
+  //
+  // Note: We cannot assume audio is pre-padded because:
+  // 1. User audio files can be any length
+  // 2. Long audio (>160k samples) requires chunking
+  // 3. Padding happens inside run_window() to handle both cases
   size_t window_samples = 0;
   const auto pshape = impl.preproc_model.input(0).get_partial_shape();
 
@@ -76,7 +83,11 @@ MelFeatures run_preprocessor(ParakeetImpl& impl, const AudioSegment& segment) {
       std::copy(pcm_ptr, pcm_ptr + samples_to_copy, audio_signal.data<float>());
     }
 
-    // Create length tensor with correct type
+    // Create length tensor matching the model's expected input type
+    // Type is determined at model export time (queried once at line 69):
+    //   - i64: Common in PyTorch → ONNX → OpenVINO conversions
+    //   - i32: Common in TensorFlow → OpenVINO conversions
+    // OpenVINO requires exact type matching - wrong type will cause inference failure
     ov::Tensor audio_length;
     if (use_i64) {
       audio_length = ov::Tensor(ov::element::i64, {1});
@@ -97,7 +108,7 @@ MelFeatures run_preprocessor(ParakeetImpl& impl, const AudioSegment& segment) {
   };
 
   // ========================================
-  // Single-shot path: dynamic model or short audio
+  // Single-shot path: Dynamically compiled model OR short audio that fits in one window
   // ========================================
   if (window_samples == 0 || segment.pcm.size() <= window_samples) {
     auto [mel_tensor, length_tensor] = run_window(segment.pcm.data(), segment.pcm.size());

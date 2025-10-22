@@ -18,16 +18,16 @@ elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   string(APPEND CMAKE_CXX_FLAGS_RELEASE " -O3 -ffast-math -finline-functions")
 endif()
 
-option(EDDY_ENABLE_WHISPER "Enable Whisper (OpenVINO GenAI) support" OFF)
 option(EDDY_BUILD_EXAMPLES "Build examples" ON)
 option(EDDY_BUILD_CSHARP "Build C# bindings" OFF)
+option(EDDY_ENABLE_WHISPER "Enable Whisper (OpenVINO GenAI) support" ON)
 
 # Core dependencies
 find_package(OpenVINO REQUIRED COMPONENTS Runtime)
 find_package(SndFile REQUIRED)
 find_package(SampleRate REQUIRED)
 
-# Whisper support is optional and requires OpenVINO GenAI
+# Whisper support (enabled by default, disable with -DEDDY_ENABLE_WHISPER=OFF)
 if(EDDY_ENABLE_WHISPER)
   find_package(OpenVINOGenAI REQUIRED)
 endif()
@@ -76,7 +76,7 @@ if(WIN32)
   target_link_libraries(eddy PRIVATE Shell32)
 endif()
 
-# Optional Whisper support
+# Whisper support (enabled by default)
 if(EDDY_ENABLE_WHISPER)
   target_sources(eddy PRIVATE src/pipelines/whisper_pipeline.cpp)
   target_compile_definitions(eddy PUBLIC EDDY_WITH_OPENVINO_GENAI=1)
@@ -101,7 +101,7 @@ if(EDDY_BUILD_EXAMPLES)
   add_subdirectory(examples)
 endif()
 
-# C API shim (always build; Whisper calls are no-ops unless EDDY_ENABLE_WHISPER)
+# C API shim (always build; Whisper calls are no-ops if EDDY_ENABLE_WHISPER=OFF)
 add_library(eddy_c SHARED src/eddy_c.cpp)
 target_include_directories(eddy_c
   PUBLIC
