@@ -1,0 +1,38 @@
+[project]
+name = "eddy-benchmark"
+version = "0.1.0"
+description = "Benchmarking for eddy"
+requires-python = ">=3.10"
+dependencies = [
+    "whisper-normalizer>=0.1.0",
+    "jiwer>=3.0.0",
+    "datasets>=2.0.0",
+    "numpy>=1.24.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+]
+
+[project.scripts]
+eddy-benchmark = "benchmark:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]
+only-include = ["benchmark.py"]
+
+[tool.black]
+line-length = 100
+target-version = ['py39']
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "I", "N", "W"]
+ignore = []

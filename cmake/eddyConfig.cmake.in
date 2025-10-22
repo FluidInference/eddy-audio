@@ -2,8 +2,9 @@
 
 include(CMakeFindDependencyMacro)
 
-if(@EDDY_ENABLE_OPENVINO@)
-  find_dependency(OpenVINO COMPONENTS Runtime)
-endif()
+# Core dependencies
+find_dependency(OpenVINO COMPONENTS Runtime)
+find_dependency(SndFile)
+find_dependency(SampleRate)
 
 include("${CMAKE_CURRENT_LIST_DIR}/eddyTargets.cmake")

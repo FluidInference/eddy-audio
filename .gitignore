@@ -1,83 +1,54 @@
-# Prerequisites
-*.d
-
-# Compiled Object files
-*.slo
-*.lo
-*.o
-*.obj
-
-# Precompiled Headers
-*.gch
-*.pch
-
-# Linker files
-*.ilk
-
-# Debugger Files
-*.pdb
-
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
-
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
-
-# Executables
-*.exe
-*.out
-*.app
-
-# debug information files
-*.dwo
-
 # Build directories
 build/
 cmake-build-*/
-out/
 
-# Model files and cache
-models/
-cache/
-*.blob
+# Model files (too large for git)
+models/**/*.bin
+models/**/*.blob
 
-# Test audio (can be large)
-test_audio/
 
 # IDE
 .vscode/
 .vs/
-.idea/
-*.swp
-*.swo
-.claude/
-
-# Python
-__pycache__/
-*.pyc
-.venv/
-venv/
-
-# Node.js
-node_modules/
-dist/
-*.tsbuildinfo
-
-# .NET
-bin/
-obj/
-*.user
 *.suo
+*.user
 
-# OS
-.DS_Store
-Thumbs.db
+# Compiled
+*.o
+*.obj
+*.so
+*.dll
+*.dylib
+*.a
+*.lib
+
+# Cache
+.cache/
+*.cache
+cache/
+
+# Build artifacts
+**/obj/
+**/bin/Debug/
+**/bin/Release/
+
+# IDE/Editor specific
+.claude/
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+
+# Test files
+test_*.wav
+test_*.py
+*_test.cpp
+
+# Large archives
+*.zip
+openvino_*/
+
+# Temporary scripts
+download_*.bat
+download_*.sh
+run_*.bat

@@ -4,6 +4,28 @@
 /**
  * @file eddy_c.h
  * @brief C API for Eddy SDK - enables language bindings (C#, etc.)
+ *
+ * ## Thread Safety
+ * - All functions are thread-safe unless otherwise noted
+ * - Pipeline/model handles can be used from multiple threads concurrently
+ * - Exception: eddy_whisper_set_language/set_task are NOT thread-safe with concurrent inference
+ *
+ * ## Error Handling
+ * - Functions returning EddyError: On error, output parameters (result) are zeroed/not modified
+ * - Functions returning handles: Return NULL on error, check error_message for details
+ * - error_message parameters: Always call eddy_free_string() even if function succeeds
+ *
+ * ## Memory Management
+ * - All strings/results allocated by Eddy must be freed by caller
+ * - Use eddy_whisper_free_result() to free EddyWhisperResult (frees all nested strings)
+ * - Use eddy_parakeet_free_result() to free EddyParakeetResult
+ * - Use eddy_free_string() for standalone strings only
+ * - Do NOT call eddy_free_string() on strings inside results freed by eddy_*_free_result()
+ *
+ * ## Null Safety
+ * - Handle parameters (EddyWhisperPipeline, EddyParakeetModel) must NOT be NULL
+ * - Passing NULL handles results in EDDY_ERROR_INVALID_ARGUMENT or undefined behavior
+ * - Output parameters (result, error_message) can be NULL if you don't need them
  */
 
 #ifndef EDDY_C_H
@@ -17,6 +39,7 @@ extern "C" {
 #include <stdbool.h>
 
 // Platform-specific exports
+// Note: Define EDDY_BUILD_SHARED only when building the Eddy library itself, not when using it
 #ifdef _WIN32
   #ifdef EDDY_BUILD_SHARED
     #define EDDY_API __declspec(dllexport)
@@ -29,13 +52,14 @@ extern "C" {
 
 // Opaque handle types
 typedef void* EddyWhisperPipeline;
+typedef void* EddyParakeetModel;
 
 /**
  * @brief Configuration for Whisper pipeline
  */
 typedef struct {
     const char* model_path;
-    const char* device;           // "NPU", "CPU", "GPU", "AUTO"
+    const char* device;           // "NPU", "CPU", "AUTO"
     const char* language;         // "en", "zh", "auto", etc.
     const char* task;             // "transcribe" or "translate"
     bool return_timestamps;
@@ -45,19 +69,27 @@ typedef struct {
 
 /**
  * @brief A chunk of transcribed text with timestamps
+ *
+ * Note: Individual chunk.text pointers are managed by EddyWhisperResult
+ * Do NOT call eddy_free_string() on chunk.text - use eddy_whisper_free_result() instead
  */
 typedef struct {
     float start_ts;
     float end_ts;
-    char* text;  // Must be freed by caller using eddy_free_string
+    char* text;  // Owned by EddyWhisperResult, freed by eddy_whisper_free_result()
 } EddyWhisperChunk;
 
 /**
  * @brief Result from Whisper transcription
+ *
+ * Resource ownership:
+ * - Call eddy_whisper_free_result() to free the entire result
+ * - This frees result.text, result.chunks array, and all chunk.text strings
+ * - Do NOT manually free individual strings - eddy_whisper_free_result() handles everything
  */
 typedef struct {
-    char* text;                   // Full transcribed text, must be freed by caller
-    EddyWhisperChunk* chunks;     // Array of chunks, must be freed by caller
+    char* text;                   // Full transcribed text
+    EddyWhisperChunk* chunks;     // Array of chunks
     size_t num_chunks;
     float confidence;
     double inference_duration_ms;
@@ -169,6 +201,31 @@ EDDY_API void eddy_whisper_free_result(EddyWhisperResult* result);
  */
 EDDY_API void eddy_free_string(char* str);
 
+// -----------------------------
+// Parakeet (OpenVINO) C API
+// -----------------------------
+
+typedef struct {
+    const char* device;      // "CPU", "NPU", or "AUTO"
+    const char* model_dir;   // Directory containing parakeet_*.xml/bin/json; NULL to use Eddy cache
+    int blank_token_id;      // Typically 1024
+} EddyParakeetConfig;
+
+typedef struct {
+    char* text;          // must be freed with eddy_parakeet_free_result
+    int* token_ids;      // must be freed with eddy_parakeet_free_result
+    size_t num_tokens;
+    float confidence;
+    double latency_ms;
+} EddyParakeetResult;
+
+EDDY_API EddyParakeetModel eddy_parakeet_create(EddyParakeetConfig config, char** error_message);
+EDDY_API void eddy_parakeet_destroy(EddyParakeetModel model);
+EDDY_API EddyError eddy_parakeet_infer_file(EddyParakeetModel model, const char* wav_path, EddyParakeetResult* result, char** error_message);
+EDDY_API EddyError eddy_parakeet_infer_buffer(EddyParakeetModel model, const float* pcm, size_t length, int sample_rate, EddyParakeetResult* result, char** error_message);
+EDDY_API char* eddy_parakeet_decode_tokens(EddyParakeetModel model, const int* token_ids, size_t count);
+EDDY_API void eddy_parakeet_free_result(EddyParakeetResult* result);
+
 // Utility
 
 /**
@@ -176,6 +233,36 @@ EDDY_API void eddy_free_string(char* str);
  * @return Version string (e.g., "0.1.0")
  */
 EDDY_API const char* eddy_version(void);
+
+/**
+ * @brief Progress callback for model downloads
+ * @param filename Current file being downloaded
+ * @param current_file Current file index (1-based)
+ * @param total_files Total number of files to download
+ * @param user_data User-provided data pointer
+ */
+typedef void (*EddyDownloadProgressCallback)(const char* filename, int current_file, int total_files, void* user_data);
+
+/**
+ * @brief Download Parakeet model files from HuggingFace
+ *
+ * Downloads required model files to the specified directory. Skips files that already exist.
+ *
+ * @param model_name Model name (e.g., "parakeet-v2")
+ * @param target_dir Target directory path (will be created if needed)
+ * @param progress_callback Optional progress callback (can be NULL)
+ * @param user_data User data passed to progress callback
+ * @param error_message Optional error message output (call eddy_free_string() to free)
+ * @return EDDY_OK on success, error code otherwise
+ *
+ * @note Requires curl to be available in PATH
+ */
+EDDY_API EddyError eddy_download_parakeet_models(
+    const char* model_name,
+    const char* target_dir,
+    EddyDownloadProgressCallback progress_callback,
+    void* user_data,
+    char** error_message);
 
 #ifdef __cplusplus
 }

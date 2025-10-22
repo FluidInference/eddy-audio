@@ -2,7 +2,18 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "eddy/eddy_c.h"
+
+#if defined(EDDY_WITH_OPENVINO_GENAI)
 #include "eddy/pipelines/whisper_pipeline.hpp"
+#endif
+
+#include "eddy/backends/openvino_backend.hpp"
+#include "eddy/core/app_dir.hpp"
+#include "eddy/core/model_configs.hpp"
+#include "eddy/models/parakeet-v2/parakeet.hpp"
+#include "eddy/models/parakeet-v2/parakeet_openvino.hpp"
+#include "eddy/utils/ensure_models.hpp"
+#include "eddy/utils/audio_utils.hpp"
 
 #include <cstring>
 #include <string>
@@ -25,6 +36,70 @@ extern "C" {
 
 const char* eddy_version(void) {
     return "0.1.0";
+}
+
+EddyError eddy_download_parakeet_models(
+    const char* model_name,
+    const char* target_dir,
+    EddyDownloadProgressCallback progress_callback,
+    void* user_data,
+    char** error_message) {
+
+    if (!model_name || !target_dir) {
+        if (error_message) {
+            *error_message = copy_string("model_name and target_dir must not be NULL");
+        }
+        return EDDY_ERROR_INVALID_ARGUMENT;
+    }
+
+    try {
+        // Look up model configuration
+        const auto it = eddy::model_configs::MODEL_MAP.find(model_name);
+        if (it == eddy::model_configs::MODEL_MAP.end()) {
+            if (error_message) {
+                *error_message = copy_string("Unknown model: " + std::string(model_name));
+            }
+            return EDDY_ERROR_INVALID_ARGUMENT;
+        }
+
+        const eddy::ModelConfig& config = it->second;
+
+        // Create progress callback wrapper
+        eddy::parakeet::DownloadProgressCallback cpp_callback = nullptr;
+        if (progress_callback) {
+            cpp_callback = [progress_callback, user_data](const std::string& filename, int current, int total) {
+                progress_callback(filename.c_str(), current, total, user_data);
+            };
+        }
+
+        // Download models
+        std::string last_error;
+        bool success = eddy::parakeet::download_models(
+            config,
+            std::filesystem::path(target_dir),
+            &last_error,
+            cpp_callback,
+            true  // skip_existing
+        );
+
+        if (!success) {
+            if (error_message) {
+                *error_message = copy_string(last_error);
+            }
+            return EDDY_ERROR_UNKNOWN;
+        }
+
+        if (error_message) {
+            *error_message = nullptr;
+        }
+        return EDDY_OK;
+
+    } catch (const std::exception& e) {
+        if (error_message) {
+            *error_message = capture_exception(e);
+        }
+        return EDDY_ERROR_UNKNOWN;
+    }
 }
 
 void eddy_free_string(char* str) {
@@ -56,6 +131,10 @@ EddyWhisperPipeline eddy_whisper_create(
     EddyWhisperConfig config,
     char** error_message
 ) {
+#if !defined(EDDY_WITH_OPENVINO_GENAI)
+    (void)config; (void)error_message;
+    return nullptr;
+#else
     try {
         eddy::WhisperConfig cpp_config;
         cpp_config.model_path = config.model_path ? config.model_path : "";
@@ -82,11 +161,16 @@ EddyWhisperPipeline eddy_whisper_create(
         }
         return nullptr;
     }
+#endif
 }
 
 void eddy_whisper_destroy(EddyWhisperPipeline pipeline) {
+#if defined(EDDY_WITH_OPENVINO_GENAI)
     if (!pipeline) return;
     delete static_cast<eddy::WhisperPipeline*>(pipeline);
+#else
+    (void)pipeline;
+#endif
 }
 
 EddyError eddy_whisper_transcribe_file(
@@ -95,6 +179,10 @@ EddyError eddy_whisper_transcribe_file(
     EddyWhisperResult* result,
     char** error_message
 ) {
+#if !defined(EDDY_WITH_OPENVINO_GENAI)
+    (void)pipeline; (void)wav_path; (void)result; (void)error_message;
+    return EDDY_ERROR_INVALID_ARGUMENT;
+#else
     if (!pipeline || !wav_path || !result) {
         if (error_message) {
             *error_message = copy_string("[Eddy Error] Invalid argument: null pointer");
@@ -111,14 +199,29 @@ EddyError eddy_whisper_transcribe_file(
         result->confidence = cpp_result.confidence;
         result->inference_duration_ms = cpp_result.inference_duration_ms;
 
-        // Convert chunks
+        // Convert chunks (exception-safe)
         result->num_chunks = cpp_result.chunks.size();
         if (result->num_chunks > 0) {
             result->chunks = new EddyWhisperChunk[result->num_chunks];
+            // Initialize all text pointers to nullptr for safe cleanup
             for (size_t i = 0; i < result->num_chunks; i++) {
-                result->chunks[i].start_ts = cpp_result.chunks[i].start_ts;
-                result->chunks[i].end_ts = cpp_result.chunks[i].end_ts;
-                result->chunks[i].text = copy_string(cpp_result.chunks[i].text);
+                result->chunks[i].text = nullptr;
+            }
+            try {
+                for (size_t i = 0; i < result->num_chunks; i++) {
+                    result->chunks[i].start_ts = cpp_result.chunks[i].start_ts;
+                    result->chunks[i].end_ts = cpp_result.chunks[i].end_ts;
+                    result->chunks[i].text = copy_string(cpp_result.chunks[i].text);
+                }
+            } catch (...) {
+                // Cleanup partially allocated chunks
+                for (size_t i = 0; i < result->num_chunks; i++) {
+                    if (result->chunks[i].text) delete[] result->chunks[i].text;
+                }
+                delete[] result->chunks;
+                result->chunks = nullptr;
+                result->num_chunks = 0;
+                throw; // Re-throw to be caught by outer handler
             }
         } else {
             result->chunks = nullptr;
@@ -137,6 +240,7 @@ EddyError eddy_whisper_transcribe_file(
         }
         return EDDY_ERROR_UNKNOWN;
     }
+#endif
 }
 
 EddyError eddy_whisper_transcribe_buffer(
@@ -147,6 +251,10 @@ EddyError eddy_whisper_transcribe_buffer(
     EddyWhisperResult* result,
     char** error_message
 ) {
+#if !defined(EDDY_WITH_OPENVINO_GENAI)
+    (void)pipeline; (void)pcm; (void)length; (void)sample_rate; (void)result; (void)error_message;
+    return EDDY_ERROR_INVALID_ARGUMENT;
+#else
     if (!pipeline || !pcm || !result) {
         if (error_message) {
             *error_message = copy_string("[Eddy Error] Invalid argument: null pointer");
@@ -163,14 +271,29 @@ EddyError eddy_whisper_transcribe_buffer(
         result->confidence = cpp_result.confidence;
         result->inference_duration_ms = cpp_result.inference_duration_ms;
 
-        // Convert chunks
+        // Convert chunks (exception-safe)
         result->num_chunks = cpp_result.chunks.size();
         if (result->num_chunks > 0) {
             result->chunks = new EddyWhisperChunk[result->num_chunks];
+            // Initialize all text pointers to nullptr for safe cleanup
             for (size_t i = 0; i < result->num_chunks; i++) {
-                result->chunks[i].start_ts = cpp_result.chunks[i].start_ts;
-                result->chunks[i].end_ts = cpp_result.chunks[i].end_ts;
-                result->chunks[i].text = copy_string(cpp_result.chunks[i].text);
+                result->chunks[i].text = nullptr;
+            }
+            try {
+                for (size_t i = 0; i < result->num_chunks; i++) {
+                    result->chunks[i].start_ts = cpp_result.chunks[i].start_ts;
+                    result->chunks[i].end_ts = cpp_result.chunks[i].end_ts;
+                    result->chunks[i].text = copy_string(cpp_result.chunks[i].text);
+                }
+            } catch (...) {
+                // Cleanup partially allocated chunks
+                for (size_t i = 0; i < result->num_chunks; i++) {
+                    if (result->chunks[i].text) delete[] result->chunks[i].text;
+                }
+                delete[] result->chunks;
+                result->chunks = nullptr;
+                result->num_chunks = 0;
+                throw; // Re-throw to be caught by outer handler
             }
         } else {
             result->chunks = nullptr;
@@ -189,27 +312,37 @@ EddyError eddy_whisper_transcribe_buffer(
         }
         return EDDY_ERROR_UNKNOWN;
     }
+#endif
 }
 
 void eddy_whisper_set_language(
     EddyWhisperPipeline pipeline,
     const char* language
 ) {
+#if defined(EDDY_WITH_OPENVINO_GENAI)
     if (!pipeline || !language) return;
     auto* pipe = static_cast<eddy::WhisperPipeline*>(pipeline);
     pipe->set_language(language);
+#else
+    (void)pipeline; (void)language;
+#endif
 }
 
 void eddy_whisper_set_task(
     EddyWhisperPipeline pipeline,
     const char* task
 ) {
+#if defined(EDDY_WITH_OPENVINO_GENAI)
     if (!pipeline || !task) return;
     auto* pipe = static_cast<eddy::WhisperPipeline*>(pipeline);
     pipe->set_task(task);
+#else
+    (void)pipeline; (void)task;
+#endif
 }
 
 const char* eddy_whisper_get_language(EddyWhisperPipeline pipeline) {
+#if defined(EDDY_WITH_OPENVINO_GENAI)
     if (!pipeline) return "";
     auto* pipe = static_cast<eddy::WhisperPipeline*>(pipeline);
     // Note: returning a temporary string's c_str() is dangerous
@@ -217,6 +350,151 @@ const char* eddy_whisper_get_language(EddyWhisperPipeline pipeline) {
     static thread_local std::string lang_storage;
     lang_storage = pipe->get_language();
     return lang_storage.c_str();
+#else
+    (void)pipeline;
+    return "";
+#endif
+}
+
+// -----------------------------
+// Parakeet C API
+// -----------------------------
+
+typedef struct {
+    std::shared_ptr<eddy::parakeet::IParakeetModel> model;
+} CParakeet;
+
+EDDY_API void eddy_parakeet_free_result(EddyParakeetResult* result) {
+    if (!result) return;
+    if (result->text) { delete[] result->text; result->text = nullptr; }
+    if (result->token_ids) { delete[] result->token_ids; result->token_ids = nullptr; }
+    result->num_tokens = 0;
+}
+
+EDDY_API EddyParakeetModel eddy_parakeet_create(EddyParakeetConfig config, char** error_message) {
+    try {
+        std::string device = config.device ? config.device : "CPU";
+
+        auto backend = std::make_shared<eddy::OpenVINOBackend>(
+            eddy::OpenVINOOptions{ .device = device, .cache_dir = eddy::get_model_dir("parakeet-v2").string() }
+        );
+
+        // Resolve model directory: prefer explicit, else cache and ensure availability
+        std::filesystem::path model_dir;
+        if (config.model_dir && std::string(config.model_dir).size() > 0) {
+            model_dir = config.model_dir;
+        } else {
+            model_dir = eddy::get_model_assets_dir("parakeet-v2");
+            std::string err;
+            (void)eddy::parakeet::check_models_available(model_dir, &err);
+#if defined(_WIN32)
+            if (!std::filesystem::exists(model_dir)) {
+                auto legacy = eddy::get_app_data_dir() / "cache" / "models" / "parakeet-v2" / "files";
+                if (std::filesystem::exists(legacy)) model_dir = legacy;
+            }
+#endif
+        }
+
+        eddy::parakeet::ModelPaths paths{
+            .preprocessor = {.path = (model_dir / "parakeet_melspectogram.xml").string()},
+            .encoder = {.path = (model_dir / "parakeet_encoder.xml").string()},
+            .decoder = {.path = (model_dir / "parakeet_decoder.xml").string()},
+            .joint = {.path = (model_dir / "parakeet_joint.xml").string()},
+            .tokenizer_json = (model_dir / "parakeet_vocab.json").string()
+        };
+
+        eddy::parakeet::RuntimeConfig cfg{
+            .device = device,
+            .blank_token_id = config.blank_token_id > 0 ? config.blank_token_id : 1024,
+            .duration_bins = {0,1,2,3,4}
+        };
+
+        auto model = eddy::parakeet::make_openvino_parakeet(backend, paths, cfg);
+        auto* handle = new CParakeet{model};
+        return static_cast<EddyParakeetModel>(handle);
+    } catch (const std::exception& e) {
+        if (error_message) *error_message = capture_exception(e);
+        return nullptr;
+    } catch (...) {
+        if (error_message) *error_message = copy_string("[Eddy Error] Unknown exception in create");
+        return nullptr;
+    }
+}
+
+EDDY_API void eddy_parakeet_destroy(EddyParakeetModel handle) {
+    if (!handle) return;
+    delete static_cast<CParakeet*>(handle);
+}
+
+static EddyError parakeet_infer_common(CParakeet* h, const float* pcm, size_t length, int sample_rate, EddyParakeetResult* out, char** err) {
+    if (!h || !pcm || !out) {
+        if (err) *err = copy_string("[Eddy Error] Invalid argument: null pointer");
+        return EDDY_ERROR_INVALID_ARGUMENT;
+    }
+    if (sample_rate != 16000) {
+        if (err) *err = copy_string("[Eddy Error] Parakeet expects 16kHz mono audio");
+        return EDDY_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        eddy::parakeet::AudioSegment seg;
+        seg.sample_rate = 16000;
+        seg.pcm.assign(pcm, pcm + length);
+        eddy::parakeet::SegmentOptions opt;
+        auto res = h->model->infer(seg, opt);
+
+        out->text = copy_string(res.text);
+        out->confidence = res.overall_confidence;
+        out->latency_ms = res.latency_ms;
+        out->num_tokens = res.token_ids.size();
+        if (out->num_tokens > 0) {
+            out->token_ids = new int[out->num_tokens];
+            for (size_t i = 0; i < out->num_tokens; ++i) out->token_ids[i] = res.token_ids[i];
+        } else {
+            out->token_ids = nullptr;
+        }
+        return EDDY_OK;
+    } catch (const std::exception& e) {
+        if (err) *err = capture_exception(e);
+        return EDDY_ERROR_INFERENCE_FAILED;
+    } catch (...) {
+        if (err) *err = copy_string("[Eddy Error] Unknown exception during parakeet inference");
+        return EDDY_ERROR_UNKNOWN;
+    }
+}
+
+EDDY_API EddyError eddy_parakeet_infer_file(EddyParakeetModel handle, const char* wav_path, EddyParakeetResult* out, char** err) {
+    if (!handle || !wav_path || !out) {
+        if (err) *err = copy_string("[Eddy Error] Invalid argument: null pointer");
+        return EDDY_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        auto* h = static_cast<CParakeet*>(handle);
+        auto pcm = eddy::audio::read_wav(wav_path);
+        return parakeet_infer_common(h, pcm.data(), pcm.size(), 16000, out, err);
+    } catch (const std::exception& e) {
+        if (err) *err = capture_exception(e);
+        return EDDY_ERROR_FILE_NOT_FOUND;
+    } catch (...) {
+        if (err) *err = copy_string("[Eddy Error] Unknown exception in infer_file");
+        return EDDY_ERROR_UNKNOWN;
+    }
+}
+
+EDDY_API EddyError eddy_parakeet_infer_buffer(EddyParakeetModel handle, const float* pcm, size_t length, int sample_rate, EddyParakeetResult* out, char** err) {
+    if (!handle) {
+        if (err) *err = copy_string("[Eddy Error] Invalid argument: null handle");
+        return EDDY_ERROR_INVALID_ARGUMENT;
+    }
+    auto* h = static_cast<CParakeet*>(handle);
+    return parakeet_infer_common(h, pcm, length, sample_rate, out, err);
+}
+
+EDDY_API char* eddy_parakeet_decode_tokens(EddyParakeetModel handle, const int* token_ids, size_t count) {
+    if (!handle || !token_ids || count == 0) return copy_string("");
+    auto* h = static_cast<CParakeet*>(handle);
+    std::vector<int> ids(token_ids, token_ids + count);
+    auto txt = h->model->decode_tokens(ids);
+    return copy_string(txt);
 }
 
 } // extern "C"

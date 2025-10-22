@@ -1,0 +1,9 @@
+{
+  "name": "eddy",
+  "version": "0.1.0",
+  "description": "Fast, local-first speech recognition with OpenVINO",
+  "dependencies": [
+    "libsndfile",
+    "libsamplerate"
+  ]
+}

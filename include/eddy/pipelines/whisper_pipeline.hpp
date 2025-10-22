@@ -17,7 +17,7 @@ struct WhisperConfig {
     /// Path to the Whisper model directory (containing .xml/.bin files)
     std::string model_path;
 
-    /// Device to run inference on: "NPU", "CPU", "GPU", or "AUTO"
+    /// Device to run inference on: "NPU", "CPU", or "AUTO"
     std::string device = "NPU";
 
     /// Language code (e.g., "en", "zh", "es") or "auto" for auto-detection
