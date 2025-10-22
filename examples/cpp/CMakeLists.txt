@@ -8,7 +8,6 @@ add_executable(parakeet_cli parakeet_cli.cpp)
 target_link_libraries(parakeet_cli PRIVATE eddy)
 
 add_executable(hf_fetch_models hf_fetch_models.cpp)
-# Include eddy headers for model_configs.hpp
-target_include_directories(hf_fetch_models PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(hf_fetch_models PRIVATE eddy)
 
 install(TARGETS parakeet_cli hf_fetch_models DESTINATION bin)

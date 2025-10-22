@@ -9,6 +9,7 @@
 
 #include "eddy/backends/openvino_backend.hpp"
 #include "eddy/core/app_dir.hpp"
+#include "eddy/core/model_configs.hpp"
 #include "eddy/models/parakeet-v2/parakeet.hpp"
 #include "eddy/models/parakeet-v2/parakeet_openvino.hpp"
 #include "eddy/utils/ensure_models.hpp"
@@ -35,6 +36,70 @@ extern "C" {
 
 const char* eddy_version(void) {
     return "0.1.0";
+}
+
+EddyError eddy_download_parakeet_models(
+    const char* model_name,
+    const char* target_dir,
+    EddyDownloadProgressCallback progress_callback,
+    void* user_data,
+    char** error_message) {
+
+    if (!model_name || !target_dir) {
+        if (error_message) {
+            *error_message = copy_string("model_name and target_dir must not be NULL");
+        }
+        return EDDY_ERROR_INVALID_ARGUMENT;
+    }
+
+    try {
+        // Look up model configuration
+        const auto it = eddy::model_configs::MODEL_MAP.find(model_name);
+        if (it == eddy::model_configs::MODEL_MAP.end()) {
+            if (error_message) {
+                *error_message = copy_string("Unknown model: " + std::string(model_name));
+            }
+            return EDDY_ERROR_INVALID_ARGUMENT;
+        }
+
+        const eddy::ModelConfig& config = it->second;
+
+        // Create progress callback wrapper
+        eddy::parakeet::DownloadProgressCallback cpp_callback = nullptr;
+        if (progress_callback) {
+            cpp_callback = [progress_callback, user_data](const std::string& filename, int current, int total) {
+                progress_callback(filename.c_str(), current, total, user_data);
+            };
+        }
+
+        // Download models
+        std::string last_error;
+        bool success = eddy::parakeet::download_models(
+            config,
+            std::filesystem::path(target_dir),
+            &last_error,
+            cpp_callback,
+            true  // skip_existing
+        );
+
+        if (!success) {
+            if (error_message) {
+                *error_message = copy_string(last_error);
+            }
+            return EDDY_ERROR_UNKNOWN;
+        }
+
+        if (error_message) {
+            *error_message = nullptr;
+        }
+        return EDDY_OK;
+
+    } catch (const std::exception& e) {
+        if (error_message) {
+            *error_message = capture_exception(e);
+        }
+        return EDDY_ERROR_UNKNOWN;
+    }
 }
 
 void eddy_free_string(char* str) {

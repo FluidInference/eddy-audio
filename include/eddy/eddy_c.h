@@ -234,6 +234,36 @@ EDDY_API void eddy_parakeet_free_result(EddyParakeetResult* result);
  */
 EDDY_API const char* eddy_version(void);
 
+/**
+ * @brief Progress callback for model downloads
+ * @param filename Current file being downloaded
+ * @param current_file Current file index (1-based)
+ * @param total_files Total number of files to download
+ * @param user_data User-provided data pointer
+ */
+typedef void (*EddyDownloadProgressCallback)(const char* filename, int current_file, int total_files, void* user_data);
+
+/**
+ * @brief Download Parakeet model files from HuggingFace
+ *
+ * Downloads required model files to the specified directory. Skips files that already exist.
+ *
+ * @param model_name Model name (e.g., "parakeet-v2")
+ * @param target_dir Target directory path (will be created if needed)
+ * @param progress_callback Optional progress callback (can be NULL)
+ * @param user_data User data passed to progress callback
+ * @param error_message Optional error message output (call eddy_free_string() to free)
+ * @return EDDY_OK on success, error code otherwise
+ *
+ * @note Requires curl to be available in PATH
+ */
+EDDY_API EddyError eddy_download_parakeet_models(
+    const char* model_name,
+    const char* target_dir,
+    EddyDownloadProgressCallback progress_callback,
+    void* user_data,
+    char** error_message);
+
 #ifdef __cplusplus
 }
 #endif
