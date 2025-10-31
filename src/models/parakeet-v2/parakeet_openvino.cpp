@@ -71,7 +71,12 @@ ChunkPipelineResult run_chunk_pipeline(
   const double enc_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
   t0 = std::chrono::steady_clock::now();
-  auto decoder_result = run_decoder(impl, encoder, options, decoder_state, is_last_chunk);
+  DecoderResult decoder_result;
+  if (impl.runtime_cfg.blank_token_id == 8192) {
+    decoder_result = run_decoder_v3(impl, encoder, options, decoder_state, is_last_chunk);
+  } else {
+    decoder_result = run_decoder(impl, encoder, options, decoder_state, is_last_chunk);
+  }
   t1 = std::chrono::steady_clock::now();
 
   ChunkPipelineResult result;
@@ -233,6 +238,10 @@ MelProcessingResult process_mel_features(
 
   if (mel.frames <= max_frames) {
     // Short audio - process in single chunk
+    if (std::getenv("EDDY_DEBUG")) {
+      std::cerr << "[DEBUG] Processing single chunk: mel.frames=" << mel.frames
+                << " max_frames=" << max_frames << "\n";
+    }
     DecoderState state;
     auto pipeline_result = run_chunk_pipeline(impl, mel, options, state, /*is_last_chunk=*/true);
 
@@ -244,10 +253,34 @@ MelProcessingResult process_mel_features(
     result.chunk_sizes_frames.push_back(mel.frames);
   } else {
     // Long audio - process in overlapping chunks
-    const size_t overlap_frames = std::min<size_t>(
+    if (std::getenv("EDDY_DEBUG")) {
+      std::cerr << "[DEBUG] Processing in chunks: mel.frames=" << mel.frames
+                << " max_frames=" << max_frames << "\n";
+    }
+    size_t overlap_frames = std::min<size_t>(
         max_frames > 1 ? max_frames - 1 : 1,
         std::max<size_t>(4, max_frames / 9));
+    // Allow override via env EDDY_CONTEXT_FRAMES (positive integer)
+    if (const char* e = std::getenv("EDDY_CONTEXT_FRAMES")) {
+      try {
+        int v = std::stoi(e);
+        if (v > 0) {
+          overlap_frames = std::min<size_t>(static_cast<size_t>(v), max_frames > 0 ? max_frames : overlap_frames);
+        }
+      } catch (...) {
+      }
+    }
+    // For v3, default to no-overlap simple stitching to avoid over-aggressive dedup while stabilizing
+    if (impl.runtime_cfg.blank_token_id == 8192) {
+      overlap_frames = 0;
+    }
     const size_t stride = max_frames - overlap_frames;
+
+    // Stateless mode: reset decoder state for each chunk (better for batch processing)
+    const bool stateless_mode = std::getenv("EDDY_STATELESS") != nullptr;
+    if (stateless_mode && std::getenv("EDDY_DEBUG")) {
+      std::cerr << "[DEBUG] Using stateless mode (decoder state reset per chunk)\n";
+    }
 
     DecoderState decoder_state;
     size_t offset = 0;
@@ -259,6 +292,11 @@ MelProcessingResult process_mel_features(
       const size_t chunk_size = std::min(max_frames, mel.frames - offset);
       const bool is_last_chunk = (offset + chunk_size >= mel.frames);
       result.chunk_sizes_frames.push_back(chunk_size);
+
+      // In stateless mode, reset decoder state for each chunk
+      if (stateless_mode && chunk_idx > 0) {
+        decoder_state = DecoderState();
+      }
 
       // Extract and process chunk
       MelFeatures chunk = extract_mel_chunk(mel, offset, chunk_size);
@@ -277,10 +315,34 @@ MelProcessingResult process_mel_features(
       ci.tokens_predicted = pipeline_result.tokens.size();
 
       // Process chunk based on whether it's first or subsequent
-      if (chunk_idx == 0) {
-        process_first_chunk(impl, pipeline_result.tokens, pipeline_result.timings, offset,
-                            result.token_ids, result.all_timings, last_emitted_global_frame,
-                            have_last_emitted_frame, ci);
+      if (std::getenv("EDDY_DEBUG")) {
+        std::cerr << "[DEBUG] Chunk " << chunk_idx << ": offset=" << offset
+                  << " size=" << chunk_size << " tokens=" << pipeline_result.tokens.size() << "\n";
+      }
+      if (chunk_idx == 0 || impl.runtime_cfg.blank_token_id == 8192) {
+        // For v3, append everything without dedup to validate fundamentals
+        if (chunk_idx == 0) {
+          process_first_chunk(impl, pipeline_result.tokens, pipeline_result.timings, offset,
+                              result.token_ids, result.all_timings, last_emitted_global_frame,
+                              have_last_emitted_frame, ci);
+        } else if (impl.runtime_cfg.blank_token_id == 8192) {
+          // Append all tokens and timings; adjust frames to global
+          for (auto& t : pipeline_result.timings) {
+            auto tt = t;
+            tt.frame_index += offset;
+            result.all_timings.push_back(tt);
+          }
+          result.token_ids.insert(result.token_ids.end(),
+                                  pipeline_result.tokens.begin(), pipeline_result.tokens.end());
+          if (!result.all_timings.empty()) {
+            last_emitted_global_frame = result.all_timings.back().frame_index;
+            have_last_emitted_frame = true;
+          }
+          ci.tokens_appended = pipeline_result.tokens.size();
+          ci.skip_prefix = 0;
+          ci.holdback = 0;
+          ci.appended_text = impl.tokenizer.decode_span(pipeline_result.tokens.data(), pipeline_result.tokens.size());
+        }
       } else {
         process_subsequent_chunk(impl, pipeline_result.tokens, pipeline_result.timings,
                                  offset, chunk_size, overlap_frames, is_last_chunk,
@@ -389,8 +451,33 @@ void OpenVINOParakeet::ensure_compiled_model() const {
       throw std::runtime_error(std::string("Failed to resolve encoder ports: ") + e.what());
     }
 
-    const auto mel_shape = impl_->encoder_ports.mel_in.value().get_shape();
-    impl_->encoder_expected_frames = mel_shape.empty() ? 0U : mel_shape.back();
+    // Determine expected max frames per chunk from encoder input shape.
+    // If dynamic/unknown, fall back to a sensible default (configurable by env).
+    size_t expected_frames = 0;
+    try {
+      const auto mel_shape = impl_->encoder_ports.mel_in.value().get_shape();
+      expected_frames = mel_shape.empty() ? 0U : mel_shape.back();
+    } catch (...) {
+      expected_frames = 0;  // dynamic shape
+    }
+    if (expected_frames == 0) {
+      // Default window ~15s at 12.5 fps -> ~188; round to 192 frames
+      // BUT: v3 models expect mel spectrogram frames, not encoder output frames!
+      // 15 seconds = ~1876 mel frames, so use 2000 for v3
+      size_t def_frames = (impl_->runtime_cfg.blank_token_id == 8192) ? 2000 : 192;
+      if (const char* e = std::getenv("EDDY_MAX_FRAMES")) {
+        try { int v = std::stoi(e); if (v > 0 && v < 10000) def_frames = static_cast<size_t>(v); } catch (...) {}
+      }
+      impl_->encoder_expected_frames = def_frames;
+      if (impl_->runtime_cfg.blank_token_id == 8192 && std::getenv("EDDY_DEBUG")) {
+        std::cerr << "[DEBUG] V3 encoder using dynamic shape, defaulting to " << def_frames << " mel frames\n";
+      }
+    } else {
+      impl_->encoder_expected_frames = expected_frames;
+      if (impl_->runtime_cfg.blank_token_id == 8192 && std::getenv("EDDY_DEBUG")) {
+        std::cerr << "[DEBUG] V3 encoder has static shape with " << expected_frames << " frames\n";
+      }
+    }
 
     // ========================================
     // Determine encoder output indices and hidden size
@@ -403,12 +490,25 @@ void OpenVINOParakeet::ensure_compiled_model() const {
       if (outs[i] == enc_out) {
         impl_->encoder_output_index = i;
 
-        const auto shape = enc_out.get_shape();
-        if (shape.size() >= 2) {
-          impl_->encoder_hidden_size = shape[1];
-          if (shape[1] == 0) {
-            throw std::runtime_error("Encoder hidden size cannot be zero");
-          }
+        const auto pshape = enc_out.get_partial_shape();
+        if (pshape.rank().is_dynamic() || pshape.rank().get_length() < 2) {
+          throw std::runtime_error("Encoder output shape rank is dynamic or invalid");
+        }
+        // Heuristic: hidden dim is the last dimension if rank==3 and name suggests [B, T, H]
+        size_t hidden_index = 1;
+        if (pshape.rank().get_length() == 3) {
+          // If second dim is dynamic and third is static, prefer third
+          const auto d1 = pshape[1];
+          const auto d2 = pshape[2];
+          if (d1.is_dynamic() && d2.is_static()) hidden_index = 2;
+        }
+        const auto hidden_dim = pshape[hidden_index];
+        if (hidden_dim.is_dynamic()) {
+          throw std::runtime_error("Encoder hidden size is dynamic");
+        }
+        impl_->encoder_hidden_size = static_cast<size_t>(hidden_dim.get_length());
+        if (impl_->encoder_hidden_size == 0) {
+          throw std::runtime_error("Encoder hidden size cannot be zero");
         }
       }
 
@@ -426,15 +526,48 @@ void OpenVINOParakeet::ensure_compiled_model() const {
     }
     impl_->decoder_hidden_size = decoder_state_shape[2];
 
+    // Resolve decoder output indices robustly by shape
+    // Expect three float outputs: [1,1,H] (projection), [2,1,H] (h_out), [2,1,H] (c_out)
+    {
+      size_t proj = SIZE_MAX, hidx = SIZE_MAX, cidx = SIZE_MAX;
+      for (size_t i = 0; i < impl_->decoder_model.outputs().size(); ++i) {
+        auto out = impl_->decoder_model.output(i);
+        const auto et = out.get_element_type();
+        if (et != ov::element::f32 && et != ov::element::f16) continue;
+        const auto pshape = out.get_partial_shape();
+        if (!pshape.rank().is_static() || pshape.rank().get_length() != 3) continue;
+        auto d0 = pshape[0]; auto d1 = pshape[1]; auto d2 = pshape[2];
+        if (!d0.is_static() || !d1.is_static() || !d2.is_static()) continue;
+        const auto a0 = d0.get_length();
+        const auto a1 = d1.get_length();
+        const auto a2 = d2.get_length();
+        if (a1 != 1) continue; // we always expect middle dim = 1
+        if (a0 == 1 && static_cast<size_t>(a2) == impl_->decoder_hidden_size) {
+          proj = i; // projection
+        } else if (a0 == 2 && static_cast<size_t>(a2) == impl_->decoder_hidden_size) {
+          if (hidx == SIZE_MAX) hidx = i; else cidx = i;
+        }
+      }
+      if (proj == SIZE_MAX || hidx == SIZE_MAX || cidx == SIZE_MAX) {
+        throw std::runtime_error("Failed to resolve decoder output indices by shape");
+      }
+      impl_->decoder_proj_index = proj;
+      impl_->decoder_h_index = hidx;
+      impl_->decoder_c_index = cidx;
+    }
+
     // ========================================
     // Extract joint output size and validate config
     // ========================================
-    const auto joint_shape = impl_->joint_model.output("logits").get_shape();
-    if (joint_shape.empty()) {
-      throw std::runtime_error("Joint model logits tensor has no dimensions");
+    const auto joint_pshape = impl_->joint_model.output("logits").get_partial_shape();
+    if (joint_pshape.rank().is_dynamic() || joint_pshape.rank().get_length() == 0) {
+      throw std::runtime_error("Joint model logits tensor has dynamic or zero rank");
     }
-
-    impl_->joint_output_size = joint_shape.back();
+    const auto last_dim = joint_pshape[joint_pshape.rank().get_length() - 1];
+    if (last_dim.is_dynamic()) {
+      throw std::runtime_error("Joint model logits last dimension is dynamic");
+    }
+    impl_->joint_output_size = static_cast<size_t>(last_dim.get_length());
 
     const auto effective_vocab_size = static_cast<size_t>(impl_->runtime_cfg.blank_token_id) + 1;
     const auto total_heads = effective_vocab_size + impl_->runtime_cfg.duration_bins.size();
@@ -446,7 +579,24 @@ void OpenVINOParakeet::ensure_compiled_model() const {
     if (std::getenv("EDDY_DEBUG")) {
       std::cerr << "[DEBUG] Joint output size: " << impl_->joint_output_size
                 << ", token head: " << effective_vocab_size
-                << ", duration bins: " << impl_->runtime_cfg.duration_bins.size() << "\n";
+                << ", duration bins: " << impl_->runtime_cfg.duration_bins.size()
+                << ", enc_hidden: " << impl_->encoder_hidden_size
+                << ", dec_hidden: " << impl_->decoder_hidden_size << "\n";
+    }
+
+    // ========================================
+    // Resolve joint input indices robustly by matching named ports
+    // ========================================
+    try {
+      const auto enc_port = impl_->joint_model.input("encoder_outputs");
+      const auto dec_port = impl_->joint_model.input("decoder_outputs");
+      const auto inputs = impl_->joint_model.inputs();
+      for (size_t i = 0; i < inputs.size(); ++i) {
+        if (inputs[i] == enc_port) impl_->joint_enc_input_index = i;
+        if (inputs[i] == dec_port) impl_->joint_dec_input_index = i;
+      }
+    } catch (const std::exception& e) {
+      throw std::runtime_error(std::string("Failed to resolve joint input ports: ") + e.what());
     }
   });
 }
@@ -467,6 +617,16 @@ InferenceResult OpenVINOParakeet::infer(const AudioSegment& segment, const Segme
     auto t1 = std::chrono::steady_clock::now();
     t_preproc_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
+    // Debug output - can be enabled with EDDY_DEBUG=1
+    if (std::getenv("EDDY_DEBUG")) {
+      std::cerr << "[DEBUG] Preprocessor output: " << mel.frames << " frames from "
+                << segment.pcm.size() << " samples (model: "
+                << (impl_->runtime_cfg.blank_token_id == 8192 ? "v3" : "v2") << ")\n";
+    }
+
+    if (std::getenv("EDDY_DEBUG")) {
+      std::cerr << "[DEBUG] encoder_expected_frames=" << impl_->encoder_expected_frames << "\n";
+    }
     mel_result = process_mel_features(*impl_, mel, options, impl_->encoder_expected_frames);
   }
 
@@ -501,4 +661,3 @@ void OpenVINOParakeet::warmup() {
 }
 
 }  // namespace eddy::parakeet
-

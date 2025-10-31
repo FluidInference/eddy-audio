@@ -375,8 +375,14 @@ EDDY_API EddyParakeetModel eddy_parakeet_create(EddyParakeetConfig config, char*
     try {
         std::string device = config.device ? config.device : "CPU";
 
+        // Determine model variant from environment (default: parakeet-v2)
+        std::string variant = []{
+            const char* env = std::getenv("EDDY_PARAKEET_MODEL");
+            return (env && *env) ? std::string(env) : std::string("parakeet-v2");
+        }();
+
         auto backend = std::make_shared<eddy::OpenVINOBackend>(
-            eddy::OpenVINOOptions{ .device = device, .cache_dir = eddy::get_model_dir("parakeet-v2").string() }
+            eddy::OpenVINOOptions{ .device = device, .cache_dir = eddy::get_model_dir(variant).string() }
         );
 
         // Resolve model directory: prefer explicit, else cache and ensure availability
@@ -384,12 +390,16 @@ EDDY_API EddyParakeetModel eddy_parakeet_create(EddyParakeetConfig config, char*
         if (config.model_dir && std::string(config.model_dir).size() > 0) {
             model_dir = config.model_dir;
         } else {
-            model_dir = eddy::get_model_assets_dir("parakeet-v2");
+            model_dir = eddy::get_model_assets_dir(variant);
             std::string err;
-            (void)eddy::parakeet::check_models_available(model_dir, &err);
+            (void)eddy::parakeet::check_models_available(
+                model_dir, &err,
+                (variant == std::string("parakeet-v3")) ? eddy::model_configs::PARAKEET_V3_FILES
+                                                         : eddy::model_configs::PARAKEET_STANDARD_FILES
+            );
 #if defined(_WIN32)
             if (!std::filesystem::exists(model_dir)) {
-                auto legacy = eddy::get_app_data_dir() / "cache" / "models" / "parakeet-v2" / "files";
+                auto legacy = eddy::get_app_data_dir() / "cache" / "models" / variant / "files";
                 if (std::filesystem::exists(legacy)) model_dir = legacy;
             }
 #endif
@@ -400,12 +410,15 @@ EDDY_API EddyParakeetModel eddy_parakeet_create(EddyParakeetConfig config, char*
             .encoder = {.path = (model_dir / "parakeet_encoder.xml").string()},
             .decoder = {.path = (model_dir / "parakeet_decoder.xml").string()},
             .joint = {.path = (model_dir / "parakeet_joint.xml").string()},
-            .tokenizer_json = (model_dir / "parakeet_vocab.json").string()
+            .tokenizer_json = (variant == std::string("parakeet-v3"))
+                                ? (model_dir / "parakeet_v3_vocab.json").string()
+                                : (model_dir / "parakeet_vocab.json").string()
         };
 
         eddy::parakeet::RuntimeConfig cfg{
             .device = device,
-            .blank_token_id = config.blank_token_id > 0 ? config.blank_token_id : 1024,
+            .blank_token_id = config.blank_token_id > 0 ? config.blank_token_id
+                            : (variant == std::string("parakeet-v3") ? 8192 : 1024),
             .duration_bins = {0,1,2,3,4}
         };
 

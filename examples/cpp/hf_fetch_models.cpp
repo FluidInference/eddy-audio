@@ -20,6 +20,7 @@ void print_usage(const char* prog) {
     std::cout << "  --help              Show this help\n\n";
     std::cout << "Examples:\n";
     std::cout << "  " << prog << " --model parakeet-v2\n";
+    std::cout << "  " << prog << " --model parakeet-v3\n";
     std::cout << "  " << prog << " --target C:\\path\\to\\models\n";
 }
 
@@ -53,7 +54,12 @@ int main(int argc, char** argv) {
     auto it = MODEL_MAP.find(model_name);
     if (it == MODEL_MAP.end()) {
         std::cerr << "ERROR: Unknown model: " << model_name << "\n";
-        std::cerr << "Available models: parakeet-v2\n";
+        std::cerr << "Available models:";
+        bool first = true;
+        for (const auto& kv : MODEL_MAP) {
+            std::cerr << (first ? " " : ", ") << kv.first; first = false;
+        }
+        std::cerr << "\n";
         return 1;
     }
 

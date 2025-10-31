@@ -29,15 +29,31 @@ namespace model_configs {
         "parakeet_vocab.json"
     };
 
+    // Parakeet v3 requires the v3-specific vocabulary file
+    inline const std::vector<std::string> PARAKEET_V3_FILES = {
+        "parakeet_encoder.xml", "parakeet_encoder.bin",
+        "parakeet_decoder.xml", "parakeet_decoder.bin",
+        "parakeet_joint.xml", "parakeet_joint.bin",
+        "parakeet_melspectogram.xml", "parakeet_melspectogram.bin",
+        "parakeet_v3_vocab.json"
+    };
+
     inline const ModelConfig PARAKEET_V2 = {
         .repo_id = "FluidInference/parakeet-tdt-0.6b-v2-ov",
         .required_files = PARAKEET_STANDARD_FILES,
         .cache_subdir = "parakeet-v2"
     };
 
+    inline const ModelConfig PARAKEET_V3 = {
+        .repo_id = "FluidInference/parakeet-tdt-0.6b-v3-ov",
+        .required_files = PARAKEET_V3_FILES,
+        .cache_subdir = "parakeet-v3"
+    };
+
     // Model name lookup map
     inline const std::map<std::string, ModelConfig> MODEL_MAP = {
-        {"parakeet-v2", PARAKEET_V2}
+        {"parakeet-v2", PARAKEET_V2},
+        {"parakeet-v3", PARAKEET_V3}
     };
 
     // Default model

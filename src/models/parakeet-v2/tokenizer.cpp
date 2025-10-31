@@ -1,4 +1,4 @@
-#include "eddy/models/parakeet-v2/tokenizer.hpp"
+﻿#include "eddy/models/parakeet-v2/tokenizer.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -8,9 +8,10 @@
 
 namespace eddy::parakeet {
 
-// SentencePiece word boundary marker (U+2581 "▁" Lower One Eighth Block)
-// This character appears at the start of words in the tokenized output
-static constexpr std::string_view kWordBoundary = "▁";
+// SentencePiece word boundary marker (U+2581, "▁")
+// Define as raw UTF-8 bytes to avoid source encoding issues
+static constexpr char kBoundaryBytes[] = "\xE2\x96\x81";
+static constexpr std::string_view kWordBoundary{kBoundaryBytes, 3};
 
 void Tokenizer::load(const std::string& path, int blank_id) {
   std::ifstream stream(path);
@@ -69,10 +70,23 @@ std::string Tokenizer::decode_span(const int* tokens, size_t count) const {
       continue;
     }
 
-    // Handle SentencePiece word boundary marker
-    bool prepend_space = piece.starts_with(kWordBoundary);
-    if (prepend_space) {
+    // Skip special tokens (v3 format: <|...|>)
+    if (piece.starts_with("<|") && piece.ends_with("|>")) {
+      continue;
+    }
+
+    // Handle word boundary markers:
+    // - SentencePiece (v2): Uses ▁ (U+2581) prefix
+    // - GPT-style (v3): Uses space ' ' prefix
+    bool prepend_space = false;
+    if (piece.starts_with(kWordBoundary)) {
+      // SentencePiece format (v2)
+      prepend_space = true;
       piece.remove_prefix(kWordBoundary.size());
+    } else if (piece.starts_with(' ')) {
+      // GPT-style format (v3)
+      prepend_space = true;
+      piece.remove_prefix(1);
     }
 
     // Append to result with appropriate spacing
@@ -115,4 +129,6 @@ bool Tokenizer::is_punctuation(int token_id) const {
 }
 
 }  // namespace eddy::parakeet
+
+
 

@@ -56,4 +56,11 @@ DecoderResult run_decoder(ParakeetImpl& impl,
                                 DecoderState& state,
                                 bool is_last_chunk);
 
+// V3-specific TDT decoder (blank_id=8192). Mirrors Swift TdtDecoderV3 semantics more closely.
+DecoderResult run_decoder_v3(ParakeetImpl& impl,
+                                    const EncoderActivations& encoder,
+                                    const SegmentOptions& options,
+                                    DecoderState& state,
+                                    bool is_last_chunk);
+
 }  // namespace eddy::parakeet

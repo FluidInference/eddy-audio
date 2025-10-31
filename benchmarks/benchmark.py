@@ -21,6 +21,7 @@ Usage:
 """
 
 import argparse
+import os
 import ctypes as C
 import json
 import subprocess
@@ -204,6 +205,7 @@ def main():
     ap.add_argument("--lib", default=None, help="Path to eddy_c shared library (auto-detected if not specified)")
     ap.add_argument("--device", default="CPU", help="Device: CPU/GPU/NPU/AUTO (default: CPU)")
     ap.add_argument("--model-dir", default=None, help="Directory with parakeet model files (defaults to Eddy cache)")
+    ap.add_argument("--model", default="parakeet-v2", choices=["parakeet-v2", "parakeet-v3"], help="Model variant to use (default: parakeet-v2)")
     ap.add_argument("--max-files", type=str, default="50", help="Max files to evaluate (default: 50, use 'all' for full dataset)")
     ap.add_argument("--dataset-config", default="clean", help="HF datasets config (default: clean)")
     ap.add_argument("--split", default="test", help="HF datasets split (default: test)")
@@ -228,6 +230,9 @@ def main():
         sys.exit(1)
 
     print(f"Using library: {lib_path}")
+
+    # Select model variant for C++ via environment variable
+    os.environ["EDDY_PARAKEET_MODEL"] = args.model
 
     # Load dataset
     # First try loading from local LibriSpeech directory (avoids 100GB+ HF download)
@@ -284,10 +289,13 @@ def main():
     print(f"Loading model on device: {args.device}")
     lib = load_lib(str(lib_path))
     err = C.c_char_p()
+    # Choose appropriate blank token id based on model
+    blank_token_id = 8192 if args.model == "parakeet-v3" else 1024
+
     cfg = EddyParakeetConfig(
         device=args.device.encode("utf-8"),
         model_dir=args.model_dir.encode("utf-8") if args.model_dir else None,
-        blank_token_id=1024,
+        blank_token_id=blank_token_id,
     )
     handle = lib.eddy_parakeet_create(cfg, C.byref(err))
     if not handle:
@@ -425,6 +433,8 @@ def main():
         "config": {
             "device": args.device,
             "model_dir": args.model_dir or "cache",
+            "model": args.model,
+            "blank_token_id": blank_token_id,
             "dataset": f"librispeech_asr/{args.dataset_config}",
             "split": args.split,
             "num_files": n,
