@@ -120,18 +120,22 @@ def normalize_text_cpp_style(text: str) -> str:
 
 
 def calculate_wer(hypothesis: str, reference: str) -> Dict[str, Any]:
-    """Calculate WER metrics using jiwer with Whisper normalization"""
+    """Calculate WER and CER metrics using jiwer with Whisper normalization"""
     hyp_norm = normalize_text(hypothesis)
     ref_norm = normalize_text(reference)
 
     # Calculate WER
     wer_score = jiwer.wer(ref_norm, hyp_norm)
 
-    # Get detailed measures
+    # Get detailed word measures
     output = jiwer.process_words(ref_norm, hyp_norm)
+
+    # Calculate CER (Character Error Rate)
+    cer_score = jiwer.cer(ref_norm, hyp_norm)
 
     return {
         "wer": wer_score * 100,  # as percentage
+        "cer": cer_score * 100,  # as percentage
         "substitutions": output.substitutions,
         "deletions": output.deletions,
         "insertions": output.insertions,
@@ -204,6 +208,7 @@ def main():
     ap.add_argument("--lib", default=None, help="Path to eddy_c shared library (auto-detected if not specified)")
     ap.add_argument("--device", default="CPU", help="Device: CPU/GPU/NPU/AUTO (default: CPU)")
     ap.add_argument("--model-dir", default=None, help="Directory with parakeet model files (defaults to Eddy cache)")
+    ap.add_argument("--model", choices=["parakeet-v2", "parakeet-v3"], default="parakeet-v2", help="Model version (default: parakeet-v2)")
     ap.add_argument("--max-files", type=str, default="50", help="Max files to evaluate (default: 50, use 'all' for full dataset)")
     ap.add_argument("--dataset-config", default="clean", help="HF datasets config (default: clean)")
     ap.add_argument("--split", default="test", help="HF datasets split (default: test)")
@@ -281,13 +286,26 @@ def main():
         ds = ds.cast_column("audio", Audio(sampling_rate=16000))
 
     # Load library and create model
-    print(f"Loading model on device: {args.device}")
+    print(f"Loading model {args.model} on device: {args.device}")
     lib = load_lib(str(lib_path))
     err = C.c_char_p()
+
+    # Set blank_token_id based on model version
+    blank_token_id = 8192 if args.model == "parakeet-v3" else 1024
+
+    # Auto-resolve model directory from cache if not explicitly provided
+    # The C++ code will use get_model_assets_dir(model_name) based on blank_token_id
+    # So we can pass None and let C++ handle it, OR explicitly construct the path
+    model_dir_to_use = args.model_dir
+    if not model_dir_to_use:
+        # Let C++ auto-select based on blank_token_id (it infers model name from it)
+        # This ensures we use the correct cache directory: ~/.cache/eddy/models/parakeet-v{2,3}/
+        model_dir_to_use = None
+
     cfg = EddyParakeetConfig(
         device=args.device.encode("utf-8"),
-        model_dir=args.model_dir.encode("utf-8") if args.model_dir else None,
-        blank_token_id=1024,
+        model_dir=model_dir_to_use.encode("utf-8") if model_dir_to_use else None,
+        blank_token_id=blank_token_id,
     )
     handle = lib.eddy_parakeet_create(cfg, C.byref(err))
     if not handle:
@@ -301,14 +319,6 @@ def main():
     print("=" * 80)
 
     results = []
-
-    # C++ normalization totals (lowercase + remove punctuation)
-    total_cpp_edits = 0
-    total_cpp_words = 0
-
-    # Whisper normalization totals (full OpenAI normalization)
-    total_whisper_edits = 0
-    total_whisper_words = 0
 
     total_audio_duration = 0.0
     total_processing_time = 0.0
@@ -361,23 +371,8 @@ def main():
 
         hyp = (res.text or b"").decode("utf-8", errors="ignore")
 
-        # Calculate WER with C++ normalization (lowercase + remove punctuation - matches C++ TextNormalizer)
-        cpp_normalized_ref = normalize_text_cpp_style(ref)
-        cpp_normalized_hyp = normalize_text_cpp_style(hyp)
-        cpp_output = jiwer.process_words(cpp_normalized_ref, cpp_normalized_hyp)
-        cpp_wer = cpp_output.wer * 100.0
-
-        # Calculate WER with OpenAI Whisper normalization (full normalization)
+        # Calculate WER and CER with OpenAI Whisper normalization
         wer_metrics = calculate_wer(hyp, ref)
-
-        # Track totals (C++ style normalization)
-        total_cpp_edits += cpp_output.substitutions + cpp_output.deletions + cpp_output.insertions
-        total_cpp_words += cpp_output.substitutions + cpp_output.deletions + cpp_output.hits
-
-        # Track totals (OpenAI Whisper normalization)
-        ref_words = len(normalize_text(ref).split())
-        total_whisper_edits += wer_metrics["substitutions"] + wer_metrics["deletions"] + wer_metrics["insertions"]
-        total_whisper_words += ref_words
 
         total_audio_duration += audio_duration
         total_processing_time += res.latency_ms / 1000.0
@@ -388,7 +383,7 @@ def main():
             "reference": ref,
             "hypothesis": hyp,
             "wer": wer_metrics["wer"],
-            "wer_cpp": cpp_wer,
+            "cer": wer_metrics["cer"],
             "audio_duration_sec": audio_duration,
             "processing_time_sec": res.latency_ms / 1000.0,
             "rtfx": audio_duration / (res.latency_ms / 1000.0),
@@ -403,36 +398,52 @@ def main():
 
         # Progress update
         if (i + 1) % 10 == 0 or i == n - 1:
-            current_wer = (total_whisper_edits / max(1, total_whisper_words)) * 100
+            # Calculate current average WER (per-file average, not corpus-level)
+            current_wer_values = [r["wer"] for r in results]
+            current_avg_wer = sum(current_wer_values) / len(current_wer_values) if current_wer_values else 0.0
             current_rtfx = total_audio_duration / max(0.001, total_processing_time)
-            print(f"[{i+1}/{n}] WER: {current_wer:.2f}%  RTFx: {current_rtfx:.1f}x  Last: {wer_metrics['wer']:.2f}%")
+            print(f"[{i+1}/{n}] Avg WER: {current_avg_wer:.2f}%  RTFx: {current_rtfx:.1f}x  Last: {wer_metrics['wer']:.2f}%")
 
     lib.eddy_parakeet_destroy(handle)
 
     # Calculate final metrics
     elapsed_time = time.time() - start_time
-    overall_wer_whisper = (total_whisper_edits / max(1, total_whisper_words)) * 100
-    overall_wer_cpp = (total_cpp_edits / max(1, total_cpp_words)) * 100
     overall_rtfx = total_audio_duration / max(0.001, total_processing_time)
 
-    # Compute per-file WER statistics
+    # Compute per-file WER and CER statistics
     wer_values = [r["wer"] for r in results]
+    cer_values = [r["cer"] for r in results]
+    rtfx_values = [r["rtfx"] for r in results]
+
     wer_values.sort()
+    cer_values.sort()
+    rtfx_values.sort()
+
     median_wer = wer_values[len(wer_values) // 2] if wer_values else 0.0
+    median_cer = cer_values[len(cer_values) // 2] if cer_values else 0.0
+    median_rtfx = rtfx_values[len(rtfx_values) // 2] if rtfx_values else 0.0
+
+    # Calculate average metrics
+    average_wer = sum(wer_values) / len(wer_values) if wer_values else 0.0
+    average_cer = sum(cer_values) / len(cer_values) if cer_values else 0.0
 
     # Save results
     output_data = {
         "config": {
             "device": args.device,
             "model_dir": args.model_dir or "cache",
+            "model": args.model,
+            "blank_token_id": blank_token_id,
             "dataset": f"librispeech_asr/{args.dataset_config}",
             "split": args.split,
             "num_files": n,
         },
         "metrics": {
-            "overall_wer": overall_wer_whisper,
-            "overall_wer_cpp": overall_wer_cpp,
+            "average_wer": average_wer,
             "median_wer": median_wer,
+            "average_cer": average_cer,
+            "median_cer": median_cer,
+            "median_rtfx": median_rtfx,
             "overall_rtfx": overall_rtfx,
             "total_audio_duration_sec": total_audio_duration,
             "total_processing_time_sec": total_processing_time,
@@ -446,19 +457,34 @@ def main():
     with open(output_path, "w") as f:
         json.dump(output_data, f, indent=2)
 
-    # Print summary
+    # Print summary (FluidAudio-style format)
     print("\n" + "=" * 80)
-    print("BENCHMARK SUMMARY")
+    print("BENCHMARK RESULTS")
     print("=" * 80)
-    print(f"Files processed:      {n}")
-    print(f"Overall WER (C++):    {overall_wer_cpp:.2f}%")
-    print(f"Overall WER (norm):   {overall_wer_whisper:.2f}% (OpenAI Whisper normalized)")
-    print(f"Median WER:           {median_wer:.2f}%")
-    print(f"Overall RTFx:         {overall_rtfx:.1f}x")
-    print(f"Total audio:          {total_audio_duration:.1f}s")
-    print(f"Total processing:     {total_processing_time:.1f}s")
-    print(f"Benchmark elapsed:    {elapsed_time:.1f}s")
-    print(f"Results saved to:     {output_path}")
+    print(f"   Dataset: librispeech {args.split}-{args.dataset_config}")
+    print(f"   Model: {args.model}")
+    print(f"   Device: {args.device}")
+    print(f"   Files processed: {n}")
+    print(f"   Average WER: {average_wer:.1f}%")
+    print(f"   Median WER: {median_wer:.1f}%")
+    print(f"   Average CER: {average_cer:.1f}%")
+    print(f"   Median CER: {median_cer:.1f}%")
+    print(f"   Median RTFx: {median_rtfx:.1f}x")
+    print(f"   Overall RTFx: {overall_rtfx:.1f}x ({total_audio_duration:.1f}s / {total_processing_time:.1f}s)")
+    print(f"   Benchmark runtime: {elapsed_time:.1f}s")
+    print(f"Results saved to: {output_path}")
+    print(f"   Normalization: OpenAI Whisper English")
+    print("=" * 80)
+    print()
+    print("=" * 80)
+    print("REFERENCE BENCHMARKS - FluidAudio CoreML (M4 Pro, 2620 files)")
+    print("=" * 80)
+    print("Model      | Avg WER | Med WER | Avg CER | Med RTFx | Overall RTFx | Runtime")
+    print("-----------+---------+---------+---------+----------+--------------+---------")
+    print("v2 (EN)    |   2.2%  |   0.0%  |   0.7%  |  125.6x  |    141.2x    |  3m 25s")
+    print("v3 (multi) |   2.6%  |   0.0%  |   1.1%  |  137.8x  |    153.4x    |  3m  2s")
+    print("=" * 80)
+    print("Note: v2 is more accurate for English, v3 is faster and supports multilingual")
     print("=" * 80)
 
 
