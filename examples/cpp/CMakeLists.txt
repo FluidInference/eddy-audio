@@ -10,4 +10,7 @@ target_link_libraries(parakeet_cli PRIVATE eddy)
 add_executable(hf_fetch_models hf_fetch_models.cpp)
 target_link_libraries(hf_fetch_models PRIVATE eddy)
 
-install(TARGETS parakeet_cli hf_fetch_models DESTINATION bin)
+add_executable(benchmark_fleurs benchmark_fleurs.cpp)
+target_link_libraries(benchmark_fleurs PRIVATE eddy)
+
+install(TARGETS parakeet_cli hf_fetch_models benchmark_fleurs DESTINATION bin)
