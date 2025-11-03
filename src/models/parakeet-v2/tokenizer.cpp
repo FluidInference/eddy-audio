@@ -21,16 +21,28 @@ void Tokenizer::load(const std::string& path, int blank_id) {
   nlohmann::json json;
   stream >> json;
 
+  // Handle two vocabulary formats:
+  // V2 format: {"0": "token0", "1": "token1", ...}
+  // V3 format: {"id_to_token": {"0": "token0", "1": "token1", ...}, "vocab_size": 8192, ...}
+  nlohmann::json vocab_json;
+  if (json.contains("id_to_token")) {
+    // V3 format with nested id_to_token
+    vocab_json = json["id_to_token"];
+  } else {
+    // V2 format (flat dictionary)
+    vocab_json = json;
+  }
+
   // Find max token ID to size vocabulary array
   size_t max_id = 0;
-  for (const auto& item : json.items()) {
+  for (const auto& item : vocab_json.items()) {
     const size_t id = static_cast<size_t>(std::stoul(item.key()));
     max_id = std::max(max_id, id);
   }
 
   // Populate vocabulary from JSON
   vocab_.assign(max_id + 1, std::string{});
-  for (const auto& item : json.items()) {
+  for (const auto& item : vocab_json.items()) {
     const size_t id = static_cast<size_t>(std::stoul(item.key()));
     vocab_[id] = item.value().get<std::string>();
   }

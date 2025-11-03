@@ -375,32 +375,45 @@ EDDY_API EddyParakeetModel eddy_parakeet_create(EddyParakeetConfig config, char*
     try {
         std::string device = config.device ? config.device : "CPU";
 
+        // Infer model version from blank_token_id
+        const char* model_name = (config.blank_token_id == 8192) ? "parakeet-v3" : "parakeet-v2";
+
         auto backend = std::make_shared<eddy::OpenVINOBackend>(
-            eddy::OpenVINOOptions{ .device = device, .cache_dir = eddy::get_model_dir("parakeet-v2").string() }
+            eddy::OpenVINOOptions{ .device = device, .cache_dir = eddy::get_model_dir(model_name).string() }
         );
 
         // Resolve model directory: prefer explicit, else cache and ensure availability
         std::filesystem::path model_dir;
         if (config.model_dir && std::string(config.model_dir).size() > 0) {
-            model_dir = config.model_dir;
-        } else {
-            model_dir = eddy::get_model_assets_dir("parakeet-v2");
-            std::string err;
-            (void)eddy::parakeet::check_models_available(model_dir, &err);
-#if defined(_WIN32)
-            if (!std::filesystem::exists(model_dir)) {
-                auto legacy = eddy::get_app_data_dir() / "cache" / "models" / "parakeet-v2" / "files";
-                if (std::filesystem::exists(legacy)) model_dir = legacy;
+            std::string dir_str = config.model_dir;
+            // Treat "cache" as a special value meaning "use default cache location"
+            if (dir_str == "cache") {
+                model_dir = eddy::get_model_assets_dir(model_name);
+            } else {
+                model_dir = config.model_dir;
             }
-#endif
+        } else {
+            model_dir = eddy::get_model_assets_dir(model_name);
         }
+
+        std::string err;
+        (void)eddy::parakeet::check_models_available(model_dir, &err);
+#if defined(_WIN32)
+        if (!std::filesystem::exists(model_dir)) {
+            auto legacy = eddy::get_app_data_dir() / "cache" / "models" / "parakeet-v2" / "files";
+            if (std::filesystem::exists(legacy)) model_dir = legacy;
+        }
+#endif
+
+        // Both v2 and v3 use the same vocab filename (as per HuggingFace repos)
+        std::string vocab_filename = "parakeet_vocab.json";
 
         eddy::parakeet::ModelPaths paths{
             .preprocessor = {.path = (model_dir / "parakeet_melspectogram.xml").string()},
             .encoder = {.path = (model_dir / "parakeet_encoder.xml").string()},
             .decoder = {.path = (model_dir / "parakeet_decoder.xml").string()},
             .joint = {.path = (model_dir / "parakeet_joint.xml").string()},
-            .tokenizer_json = (model_dir / "parakeet_vocab.json").string()
+            .tokenizer_json = (model_dir / vocab_filename).string()
         };
 
         eddy::parakeet::RuntimeConfig cfg{
