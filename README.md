@@ -1,157 +1,16 @@
 # eddy
 
-**eddy** is a high-performance audio-based AI library for Windows and Linux optimized for Intel NPUs and CPUs; eddy powers private, offline automatic speech recognition (ASR) with support for multiple hardware accelerators planned.
-
 [![Discord](https://img.shields.io/badge/Discord-Join%20Chat-7289da.svg)](https://discord.gg/WNsvaCtmDe)
 [![GitHub Stars](https://img.shields.io/github/stars/FluidInference/eddy?style=flat&logo=github)](https://github.com/FluidInference/eddy)
 
-## Overview
+**C++ inference library for multi-vendor edge NPUs.** Current focus: OpenVINO 2025.x backend for Parakeet-TDT and Whisper models. Additional runtimes (Qualcomm QNN, AMD Ryzen AI Software) coming soon.
 
-- **Private**: Fully on-device inference, no network calls after model download
-- **Multilingual**: 24 European languages supported (Parakeet V3)
-- **Cross-platform**: Windows 10/11, Linux (Ubuntu 22.04+, kernel 6.6+)
-- **NPU Optimized**: Designed for Intel NPUs and CPUs with support for additional accelerators (Qualcomm, AMD) planned
-- **Apple devices** (macOS/iOS): [FluidAudio](https://github.com/FluidInference/FluidAudio)
+For Apple platforms (macOS/iOS), use [FluidAudio](https://github.com/FluidInference/FluidAudio).
 
-## Quick Start
-
-### Python
-
-```bash
-# Clone repository
-git clone https://github.com/FluidInference/eddy.git
-cd eddy
-
-# Build C++ library
-cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=[path-to-vcpkg]/scripts/buildsystems/vcpkg.cmake
-cmake --build build --config Release
-
-# Run FLEURS multilingual benchmark
-uv run python benchmark_fleurs.py --languages en_us --samples 10 --device NPU
-
-# Or run LibriSpeech benchmark
-cd benchmarks
-uv run python benchmark.py --max-files 10 --device NPU
-```
-
-Models auto-download on first run from HuggingFace. See [benchmark_fleurs.py](benchmark_fleurs.py) and [benchmarks/benchmark.py](benchmarks/benchmark.py) for Python usage via ctypes.
-
-> **Note for Linux users:** To test on Linux from Windows, use WSL2. NPU support on Linux requires Ubuntu 22.04+ with kernel 6.6+ and the Intel NPU driver (see Troubleshooting section). Eddy's Linux NPU has not been tested yet.
-
-<details>
-<summary><b>C++ Build & Usage</b></summary>
-
-For advanced users who want to build from source:
-
-```bash
-git clone https://github.com/FluidInference/eddy.git
-cd eddy
-
-# Build with vcpkg (handles dependencies automatically)
-cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=[path-to-vcpkg]/scripts/buildsystems/vcpkg.cmake
-cmake --build build --config Release
-```
-
-**Usage (Windows):**
-
-```bash
-# Transcribe with Parakeet V2
-build/examples/cpp/Release/parakeet_cli.exe audio.wav --model parakeet-v2
-
-# Transcribe with NPU acceleration
-build/examples/cpp/Release/parakeet_cli.exe audio.wav --model parakeet-v2 --device NPU
-
-# Transcribe with Parakeet V3 (multilingual)
-build/examples/cpp/Release/parakeet_cli.exe audio.wav --model parakeet-v3 --device NPU
-
-# Benchmark on LibriSpeech
-build/examples/cpp/Release/benchmark_librispeech.exe --max-files 100 --device NPU
-
-# Benchmark on FLEURS
-build/examples/cpp/Release/benchmark_fleurs.exe "%LOCALAPPDATA%\eddy\datasets\FLEURS" --device NPU
-```
-
-**Usage (Linux):**
-
-```bash
-# Transcribe with Parakeet V2
-./build/examples/cpp/parakeet_cli audio.wav --model parakeet-v2
-
-# Transcribe with NPU acceleration (requires Intel NPU driver)
-./build/examples/cpp/parakeet_cli audio.wav --model parakeet-v2 --device NPU
-
-# Transcribe with Parakeet V3 (multilingual)
-./build/examples/cpp/parakeet_cli audio.wav --model parakeet-v3 --device NPU
-
-# Benchmark on LibriSpeech
-./build/examples/cpp/benchmark_librispeech --max-files 100 --device NPU
-
-# Benchmark on FLEURS
-./build/examples/cpp/benchmark_fleurs ~/.cache/eddy/datasets/FLEURS --device NPU
-```
-
-</details>
-
-## Models & Performance
-
-Benchmarked on Intel Core Ultra 7 155H (Meteor Lake) with Intel AI Boost NPU.
-
-### Parakeet V2 (English)
-- **Languages**: English only
-- **WER**: 2.76% (LibriSpeech test-clean)
-- **Speed**: 38× RTFx (NPU), 5-8× RTFx (CPU)
-- **Size**: 600MB
-- **Download**: [parakeet-tdt-0.6b-v2-ov](https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v2-ov)
-
-### Parakeet V3 (Multilingual)
-- **Languages**: 24 European languages
-- **WER**: 6.09% English, 17.0% average across all languages (FLEURS)
-- **Speed**: 41× RTFx (NPU), 5-8× RTFx (CPU)
-- **Size**: 1.1GB
-- **Download**: [parakeet-tdt-1.1b-v3-ov](https://huggingface.co/FluidInference/parakeet-tdt-1.1b-v3-ov)
-
-**Supported Languages**: English, Spanish, Italian, French, German, Dutch, Russian, Polish, Ukrainian, Slovak, Bulgarian, Finnish, Romanian, Croatian, Czech, Swedish, Estonian, Hungarian, Lithuanian, Danish, Maltese, Slovenian, Latvian, Greek
-
-> **RTFx** = Real-Time Factor. 41× means 10 minutes of audio transcribed in ~15 seconds.
-
-### Benchmarks
-
-We also provide [Whisper large-v3-turbo OpenVINO](https://huggingface.co/FluidInference/whisper-large-v3-turbo-fp16-ov-npu) optimized for NPU (16× RTFx). Run `python benchmark_whisper_ov.py` to compare Parakeet vs Whisper performance.
-
-See [BENCHMARK_RESULTS.md](BENCHMARK_RESULTS.md) for detailed performance metrics.
-
-## Architecture
-
-eddy uses a 4-model **FastConformer-RNNT** pipeline:
-
-1. **Mel Spectrogram** - Converts raw audio → 80 mel-frequency bins
-2. **Encoder** (FastConformer) - Processes acoustic features, outputs embeddings
-3. **Decoder** (LSTM) - Prediction network with language model
-4. **Joint Network** - Combines encoder + decoder, predicts tokens
-
-**Key Features**:
-- LSTM state continuity across audio chunks
-- Token deduplication via 2D search algorithm
-- Batch chunking: 10s windows with 3s overlap
-- Per-token timestamps (80ms granularity) and confidence scores
-- Greedy decoding for low-latency inference
-
-## Dependencies
-
-### Required
-- **OpenVINO** (2025.x) - AI inference runtime
-- **libsndfile** - Audio file I/O (WAV, FLAC, OGG)
-- **libsamplerate** - High-quality audio resampling
-
-### Installing with vcpkg (recommended)
-
-```bash
-# Install from vcpkg.json manifest
-vcpkg install
-
-# Or install manually
-vcpkg install openvino libsndfile libsamplerate
-```
+**Model Cards:**
+- [Parakeet V2 (English)](https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v2-ov)
+- [Parakeet V3 (Multilingual)](https://huggingface.co/FluidInference/parakeet-tdt-1.1b-v3-ov)
+- [Whisper large-v3-turbo](https://huggingface.co/FluidInference/whisper-large-v3-turbo-fp16-ov-npu)
 
 ## Building
 
@@ -159,7 +18,7 @@ vcpkg install openvino libsndfile libsamplerate
 # Configure with vcpkg toolchain
 cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=[path-to-vcpkg]/scripts/buildsystems/vcpkg.cmake
 
-# Or specify OpenVINO manually
+# Or specify OpenVINO manually if not using vcpkg
 cmake -S . -B build -DOpenVINO_DIR=/opt/intel/openvino/runtime/cmake
 
 # Build (Release mode recommended)
@@ -168,57 +27,76 @@ cmake --build build --config Release
 
 The build produces:
 - **Static library**: `eddy` (linkable C++ library)
-- **CLI tool**: `parakeet_cli.exe` (transcription utility)
+- **CLI tools**: `parakeet_cli.exe`, `whisper_example.exe` (examples)
 - **Benchmarks**: `benchmark_librispeech.exe`, `benchmark_fleurs.exe`
-- **Model fetcher**: `hf_fetch_models.exe` (manual model download)
 
-## Model Cache
+### Optional: Whisper Support
 
-Models auto-download on first run and are cached at:
+Whisper requires OpenVINO GenAI (not included by default):
 
-- **Windows**: `%LOCALAPPDATA%\eddy\models\`
-  - V2: `%LOCALAPPDATA%\eddy\models\parakeet-v2\files\`
-  - V3: `%LOCALAPPDATA%\eddy\models\parakeet-v3\files\`
-- **Linux**: `~/.cache/eddy/models/`
-
-To disable auto-download: `set EDDY_DISABLE_AUTO_FETCH=1`
-
-Manual download: `build/examples/cpp/Release/hf_fetch_models.exe --model parakeet-v3`
-
-## C++ API
-
-```cpp
-#include "eddy/parakeet_inference.h"
-
-int main() {
-    // Initialize Parakeet v3 with NPU
-    auto asr = eddy::ParakeetASR::create("parakeet-v3", "NPU");
-
-    // Transcribe audio file
-    auto result = asr->transcribe("audio.wav");
-    std::cout << "Text: " << result.text << std::endl;
-    std::cout << "RTFx: " << result.rtfx << "×" << std::endl;
-
-    return 0;
-}
+```bash
+cmake -S . -B build -DEDDY_ENABLE_WHISPER=ON -DOpenVINOGenAI_DIR="<path-to-genai-cmake>"
 ```
+
+## Usage Examples
+
+```bash
+# Parakeet V2
+build/examples/cpp/Release/parakeet_cli.exe audio.wav --model parakeet-v2 --device NPU
+
+# Parakeet V3
+build/examples/cpp/Release/parakeet_cli.exe audio.wav --model parakeet-v3 --device NPU
+
+# Whisper (if built with EDDY_ENABLE_WHISPER=ON)
+build/examples/cpp/Release/whisper_example.exe path/to/whisper-model audio.wav NPU
+```
+
+Models auto-download from HuggingFace on first run. See [C++ API documentation](docs/CPP_API.md) for library integration.
+
+## Models & Performance
+
+Benchmarked on Intel Core Ultra 7 155H (Meteor Lake) with Intel AI Boost NPU. RTFx values are averaged across LibriSpeech test-clean dataset.
+
+| Model | Languages | NPU Speed (avg) | CPU Speed (avg) | Size |
+|-------|-----------|-----------------|-----------------|------|
+| **Parakeet V2** | English | **38× RTFx** | 8× RTFx | 600MB |
+| **Parakeet V3** | 24 languages | **41× RTFx** | 8× RTFx | 1.1GB |
+| **Whisper large-v3-turbo** | 99 languages | **16× RTFx** | 0.44× RTFx | 1.6GB |
+
+> **RTFx** = Real-Time Factor (higher is faster). 38× means processing is 38× faster than real-time playback - 10 minutes of audio transcribed in ~16 seconds.
+
+### Performance Comparison: eddy (OpenVINO) vs PyTorch
+
+Benchmarked on Intel Core Ultra 7 155H (Meteor Lake):
+
+| Model | eddy NPU | eddy CPU | PyTorch GPU (Arc 140V) | PyTorch CPU | eddy NPU Speedup (vs PyTorch GPU) |
+|-------|----------|----------|------------------------|-------------|-----------------------------------|
+| **Parakeet V2** | 38× RTFx | 8× RTFx | 8.4× RTFx¹ | 2× RTFx² | **4.5× faster** |
+| **Parakeet V3** | 41× RTFx | 8× RTFx | 8.4× RTFx¹ | 2.5× RTFx² | **4.9× faster** |
+| **Whisper large-v3-turbo** | 16× RTFx | 0.44× RTFx | 5.5× RTFx | 0.90× RTFx | **2.9× faster** |
+
+¹ Benchmarked using NeMo parakeet-tdt_ctc-110m as proxy (similar architecture)
+² Estimated based on NeMo reference implementations
+
+*eddy's NPU implementation provides 3-5× acceleration over PyTorch GPU and 8-20× over PyTorch CPU on Intel Core Ultra 7 155H.*
+
+**Parakeet V3 Languages**: English, Spanish, Italian, French, German, Dutch, Russian, Polish, Ukrainian, Slovak, Bulgarian, Finnish, Romanian, Croatian, Czech, Swedish, Estonian, Hungarian, Lithuanian, Danish, Maltese, Slovenian, Latvian, Greek
+
+**Benchmarks**: See [BENCHMARK.md](BENCHMARK.md) for detailed results and instructions.
 
 ## Roadmap
 
-- Parakeet V2/V3 OpenVINO inference ✓
-- NPU/GPU/CPU multi-device support ✓
-- LibriSpeech and FLEURS benchmarks ✓
-- Python bindings (C API complete, wrapper in progress)
-- Voice Activity Detection (VAD) preprocessing
+- Voice Activity Detection (VAD)
 - C# bindings for .NET applications
 - Qualcomm QNN backend (Snapdragon NPU)
 - AMD Ryzen AI Software backend
 - Additional audio model support
 
-## Troubleshooting
+## Support & Resources
 
-<details>
-<summary><b>NPU Not Detected</b></summary>
+### Troubleshooting
+
+#### NPU Not Detected
 
 **Windows:**
 Check for Intel Core Ultra (Meteor Lake or newer):
@@ -227,56 +105,25 @@ build/examples/cpp/Release/parakeet_cli.exe --list-devices
 ```
 
 **Linux:**
-NPU support requires the Intel NPU driver. Check if your system meets the requirements:
+NPU support requires the Intel NPU driver.
 
-> **Note:** Linux NPU support has not been tested yet. The instructions below are based on Intel's official documentation.
+> **Note:** Linux NPU support has not been tested yet.
 
 **Requirements:**
 - Ubuntu 22.04+ with kernel 6.6+
 - Intel Core Ultra (Meteor Lake) or newer processor
 
-**Installation:**
-```bash
-# 1. Install dependencies
-sudo apt update
-sudo apt install libtbb12
+For installation instructions, see the official Intel NPU driver documentation:
+- **Installation Guide**: [github.com/intel/linux-npu-driver](https://github.com/intel/linux-npu-driver)
+- **Latest Releases**: [github.com/intel/linux-npu-driver/releases](https://github.com/intel/linux-npu-driver/releases)
 
-# 2. Download NPU driver packages from https://github.com/intel/linux-npu-driver/releases
-# Download: intel-driver-compiler-npu, intel-fw-npu, intel-level-zero-npu
-
-# 3. Install packages
-sudo dpkg -i *.deb
-
-# 4. Set up permissions
-sudo usermod -a -G render $USER
-sudo chown root:render /dev/accel/accel0
-sudo chmod g+rw /dev/accel/accel0
-
-# 5. Reboot
-sudo reboot
-```
-
-**Verify installation:**
-```bash
-ls -l /dev/accel/accel0
-./build/examples/cpp/parakeet_cli --list-devices
-```
-
-See [github.com/intel/linux-npu-driver](https://github.com/intel/linux-npu-driver) for detailed installation instructions.
-
-</details>
-
-<details>
-<summary><b>Slow Performance</b></summary>
+#### Slow Performance
 
 - Ensure OpenVINO 2025.x is installed
 - Try `--device NPU` for NPU acceleration (optimized for Intel Core Ultra)
 - See the Performance section above for expected speed on each device
 
-</details>
-
-<details>
-<summary><b>Model Configuration Issues</b></summary>
+#### Model Configuration Issues
 
 Ensure you're using the correct model configuration:
 - V2: `blank_token_id = 1024`
@@ -287,9 +134,7 @@ Ensure you're using the correct model configuration:
 build/examples/cpp/Release/parakeet_cli.exe --version
 ```
 
-</details>
-
-## Citation
+### Citation
 
 ```bibtex
 @misc{eddy-2025,
@@ -307,21 +152,13 @@ build/examples/cpp/Release/parakeet_cli.exe --version
 }
 ```
 
-## License
+### License
 
 **Apache 2.0** - See [LICENSE](LICENSE) for details.
 
 Third-party model licenses may vary. See [ThirdPartyLicenses/](ThirdPartyLicenses/) for details on Parakeet TDT models (CC-BY-4.0) and other dependencies.
 
-## Links
-
-- **Discord**: [Join Community](https://discord.gg/WNsvaCtmDe)
-- **Documentation**: [docs/](documentation/)
-- **Parakeet V2**: [HuggingFace Model Card](https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v2-ov)
-- **Parakeet V3**: [HuggingFace Model Card](https://huggingface.co/FluidInference/parakeet-tdt-1.1b-v3-ov)
-- **Base Models**: [NVIDIA NeMo Parakeet TDT](https://huggingface.co/collections/nvidia/parakeet-tdt-family-6733b7a0df18b25e7689b7b0)
-
-## Acknowledgments
+### Acknowledgments
 
 - **NVIDIA NeMo Team**: Parakeet TDT architecture and base models
 - **Intel OpenVINO**: Cross-platform inference runtime and NPU support

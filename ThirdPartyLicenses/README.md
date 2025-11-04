@@ -2,66 +2,37 @@
 
 This directory contains license information for third-party dependencies used by eddy.
 
-## Models
+## Core Dependencies
 
-### Parakeet TDT (v2 and v3)
+### NVIDIA Parakeet TDT Models
+- **Version**: v2 (0.6b), v3 (1.1b)
 - **License**: CC-BY-4.0
-- **Source**: [NVIDIA NeMo](https://huggingface.co/collections/nvidia/parakeet-tdt-family-6733b7a0df18b25e7689b7b0)
-- **Description**: Automatic speech recognition models based on FastConformer-RNNT architecture
-- **Models**:
-  - [parakeet-tdt-0.6b-v2](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2) - English only
-  - [parakeet-tdt-1.1b](https://huggingface.co/nvidia/parakeet-tdt-1.1b) - Multilingual (24 languages)
+- **Source**: [NVIDIA NeMo Parakeet TDT](https://huggingface.co/collections/nvidia/parakeet-tdt-family-6733b7a0df18b25e7689b7b0)
 
-## Runtime Dependencies
-
-### OpenVINO Toolkit
-- **License**: Apache 2.0
-- **Source**: [Intel OpenVINO](https://github.com/openvinotoolkit/openvino)
-- **Description**: Cross-platform inference runtime for AI models
-
-### libsndfile
-- **License**: LGPL-2.1 or LGPL-3.0
-- **Source**: [libsndfile](https://github.com/libsndfile/libsndfile)
-- **Description**: Library for reading and writing audio files (WAV, FLAC, OGG, etc.)
-
-### libsamplerate
-- **License**: BSD-2-Clause
-- **Source**: [libsamplerate](https://github.com/libsndfile/libsamplerate)
-- **Description**: High-quality audio sample rate conversion library
-
-## Build Dependencies
-
-### vcpkg
+### OpenAI Whisper Model
+- **Version**: large-v3-turbo
 - **License**: MIT
-- **Source**: [Microsoft vcpkg](https://github.com/microsoft/vcpkg)
-- **Description**: C++ package manager for dependency management
+- **Source**: [OpenAI Whisper](https://github.com/openai/whisper)
 
-### CMake
-- **License**: BSD-3-Clause
-- **Source**: [CMake](https://cmake.org/)
-- **Description**: Cross-platform build system generator
+### Intel OpenVINO
+- **Version**: 2025.0+
+- **License**: Apache 2.0
+- **Source**: [OpenVINO Toolkit](https://github.com/openvinotoolkit/openvino)
+
+## Additional Runtime Dependencies
+
+- **libsndfile** (LGPL-2.1+): Audio file I/O - [github.com/libsndfile/libsndfile](https://github.com/libsndfile/libsndfile)
+- **libsamplerate** (BSD-2-Clause): Audio resampling - [github.com/libsndfile/libsamplerate](https://github.com/libsndfile/libsamplerate)
 
 ## Benchmark Datasets
 
-### LibriSpeech
-- **License**: CC-BY-4.0
-- **Source**: [OpenSLR](http://www.openslr.org/12)
-- **Description**: Large-scale English speech corpus for ASR evaluation
-- **Citation**: Panayotov et al., "Librispeech: an ASR corpus based on public domain audio books," ICASSP 2015
-
-### FLEURS (Few-shot Learning Evaluation of Universal Representations of Speech)
-- **License**: CC-BY-4.0
-- **Source**: [Google Research](https://huggingface.co/datasets/google/fleurs)
-- **Description**: Multilingual speech corpus covering 102 languages
-- **Citation**: Conneau et al., "FLEURS: Few-shot Learning Evaluation of Universal Representations of Speech," SLT 2022
-
-## License Texts
-
-Full license texts for each dependency can be found in their respective subdirectories or source repositories linked above.
+- **LibriSpeech** (CC-BY-4.0): [OpenSLR](http://www.openslr.org/12)
+- **FLEURS** (CC-BY-4.0): [Google Research](https://huggingface.co/datasets/google/fleurs)
 
 ## Attribution Requirements
 
 When using eddy, please ensure compliance with:
-- CC-BY-4.0 attribution requirements for Parakeet TDT models
+- CC-BY-4.0 attribution for NVIDIA Parakeet TDT models
+- MIT license terms for OpenAI Whisper
+- Apache 2.0 license for OpenVINO
 - LGPL requirements for libsndfile (if dynamically linked)
-- Other dependency license terms as applicable to your use case
