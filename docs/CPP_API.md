@@ -4,26 +4,54 @@ This document describes how to integrate eddy as a library in your C++ applicati
 
 ## Basic Usage
 
-### Parakeet ASR
+### Parakeet V2 (English Only)
 
 ```cpp
 #include "eddy/parakeet_inference.h"
 
 int main() {
-    // Initialize Parakeet v3 with NPU
-    auto asr = eddy::ParakeetASR::create("parakeet-v3", "NPU");
+    // Initialize Parakeet V2 with NPU
+    auto asr = eddy::ParakeetASR::create("parakeet-v2", "NPU");
 
-    // Transcribe audio file
+    // Transcribe English audio file
     auto result = asr->transcribe("audio.wav");
 
     // Access results
     std::cout << "Text: " << result.text << std::endl;
     std::cout << "RTFx: " << result.rtfx << "×" << std::endl;
-    std::cout << "WER: " << result.wer << "%" << std::endl;
 
     return 0;
 }
 ```
+
+### Parakeet V3 (Multilingual)
+
+```cpp
+#include "eddy/parakeet_inference.h"
+
+int main() {
+    // Initialize Parakeet V3 with NPU
+    auto asr = eddy::ParakeetASR::create("parakeet-v3", "NPU");
+
+    // Transcribe English audio (default)
+    auto result_en = asr->transcribe("audio_en.wav");
+    std::cout << "English: " << result_en.text << std::endl;
+
+    // Transcribe Spanish audio
+    auto result_es = asr->transcribe("audio_es.wav", "es");
+    std::cout << "Spanish: " << result_es.text << std::endl;
+
+    // Transcribe French audio
+    auto result_fr = asr->transcribe("audio_fr.wav", "fr");
+    std::cout << "French: " << result_fr.text << std::endl;
+
+    return 0;
+}
+```
+
+**Supported Languages (24):** English (default), Spanish, Italian, French, German, Dutch, Russian, Polish, Ukrainian, Slovak, Bulgarian, Finnish, Romanian, Croatian, Czech, Swedish, Estonian, Hungarian, Lithuanian, Danish, Maltese, Slovenian, Latvian, Greek
+
+**Language Codes:** `en`, `es`, `it`, `fr`, `de`, `nl`, `ru`, `pl`, `uk`, `sk`, `bg`, `fi`, `ro`, `hr`, `cs`, `sv`, `et`, `hu`, `lt`, `da`, `mt`, `sl`, `lv`, `el`
 
 ### Whisper ASR
 
@@ -63,11 +91,14 @@ Creates a new Parakeet ASR instance.
 
 #### Instance Methods
 
-##### `transcribe(audio_path)`
+##### `transcribe(audio_path, language = "en")`
 Transcribes an audio file.
 
 **Parameters:**
 - `audio_path` (string): Path to audio file (WAV, FLAC, OGG, etc.)
+- `language` (string, optional): Language code for Parakeet V3 (default: `"en"`)
+  - V2: Only supports English (parameter ignored)
+  - V3: Supports 24 languages - see language codes above
 
 **Returns:** `TranscriptionResult`
 
@@ -77,6 +108,16 @@ Transcribes an audio file.
 - `wer` (double): Word error rate (if reference available)
 - `tokens` (vector): Individual token information
 - `confidence` (double): Overall confidence score
+
+**Example:**
+```cpp
+// V2: English only
+auto result = asr->transcribe("audio.wav");
+
+// V3: Specify language
+auto result_es = asr->transcribe("audio.wav", "es");  // Spanish
+auto result_fr = asr->transcribe("audio.wav", "fr");  // French
+```
 
 ### WhisperASR Class
 

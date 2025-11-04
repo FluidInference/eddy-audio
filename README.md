@@ -38,17 +38,40 @@ Whisper requires OpenVINO GenAI (not included by default):
 cmake -S . -B build -DEDDY_ENABLE_WHISPER=ON -DOpenVINOGenAI_DIR="<path-to-genai-cmake>"
 ```
 
-## Usage Examples
+## Usage
 
+### Basic Transcription
+
+**Parakeet V2** (English only):
 ```bash
-# Parakeet V2
 build/examples/cpp/Release/parakeet_cli.exe audio.wav --model parakeet-v2 --device NPU
+```
 
-# Parakeet V3
+**Parakeet V3** (Multilingual - 24 languages):
+```bash
+# English (default)
 build/examples/cpp/Release/parakeet_cli.exe audio.wav --model parakeet-v3 --device NPU
 
-# Whisper (if built with EDDY_ENABLE_WHISPER=ON)
+# Spanish
+build/examples/cpp/Release/parakeet_cli.exe audio_es.wav --model parakeet-v3 --language es --device NPU
+
+# French
+build/examples/cpp/Release/parakeet_cli.exe audio_fr.wav --model parakeet-v3 --language fr --device NPU
+```
+
+**Whisper** (if built with `EDDY_ENABLE_WHISPER=ON`):
+```bash
 build/examples/cpp/Release/whisper_example.exe path/to/whisper-model audio.wav NPU
+```
+
+### Device Selection
+
+```bash
+# NPU (best performance on Intel Core Ultra)
+--device NPU
+
+# CPU (fallback)
+--device CPU
 ```
 
 Models auto-download from HuggingFace on first run. See [C++ API documentation](docs/CPP_API.md) for library integration.
