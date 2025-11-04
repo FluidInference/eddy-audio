@@ -36,7 +36,7 @@ uv run python benchmark.py --max-files 10 --device NPU
 
 Models auto-download on first run from HuggingFace. See [benchmark_fleurs.py](benchmark_fleurs.py) and [benchmarks/benchmark.py](benchmarks/benchmark.py) for Python usage via ctypes.
 
-> **Note for Linux users:** To test on Linux from Windows, use WSL2. NPU support on Linux requires Ubuntu 22.04+ with kernel 6.6+ and the Intel NPU driver (see Troubleshooting section). Linux NPU has not been tested yet.
+> **Note for Linux users:** To test on Linux from Windows, use WSL2. NPU support on Linux requires Ubuntu 22.04+ with kernel 6.6+ and the Intel NPU driver (see Troubleshooting section). Eddy's Linux NPU has not been tested yet.
 
 <details>
 <summary><b>C++ Build & Usage</b></summary>
@@ -113,6 +113,10 @@ Benchmarked on Intel Core Ultra 7 155H (Meteor Lake) with Intel AI Boost NPU.
 **Supported Languages**: English, Spanish, Italian, French, German, Dutch, Russian, Polish, Ukrainian, Slovak, Bulgarian, Finnish, Romanian, Croatian, Czech, Swedish, Estonian, Hungarian, Lithuanian, Danish, Maltese, Slovenian, Latvian, Greek
 
 > **RTFx** = Real-Time Factor. 41× means 10 minutes of audio transcribed in ~15 seconds.
+
+### Benchmarks
+
+We also provide [Whisper large-v3-turbo OpenVINO](https://huggingface.co/FluidInference/whisper-large-v3-turbo-fp16-ov-npu) optimized for NPU (16× RTFx). Run `python benchmark_whisper_ov.py` to compare Parakeet vs Whisper performance.
 
 See [BENCHMARK_RESULTS.md](BENCHMARK_RESULTS.md) for detailed performance metrics.
 
