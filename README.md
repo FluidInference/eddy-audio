@@ -9,7 +9,7 @@
 
 - **Private**: Fully on-device inference, no network calls after model download
 - **Multilingual**: 24 European languages supported (Parakeet V3)
-- **Cross-platform**: Windows 10/11, Linux (Ubuntu 20.04+)
+- **Cross-platform**: Windows 10/11, Linux (Ubuntu 22.04+, kernel 6.6+)
 - **NPU Optimized**: Designed for Intel NPUs and CPUs with support for additional accelerators (Qualcomm, AMD) planned
 - **Apple devices** (macOS/iOS): [FluidAudio](https://github.com/FluidInference/FluidAudio)
 
@@ -27,7 +27,7 @@ cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=[path-to-vcpkg]/scripts/buildsystems/
 cmake --build build --config Release
 
 # Run FLEURS multilingual benchmark
-python benchmark_fleurs.py --languages en_us --samples 10 --device NPU
+uv run python benchmark_fleurs.py --languages en_us --samples 10 --device NPU
 
 # Or run LibriSpeech benchmark
 cd benchmarks
@@ -35,6 +35,8 @@ uv run python benchmark.py --max-files 10 --device NPU
 ```
 
 Models auto-download on first run from HuggingFace. See [benchmark_fleurs.py](benchmark_fleurs.py) and [benchmarks/benchmark.py](benchmarks/benchmark.py) for Python usage via ctypes.
+
+> **Note for Linux users:** To test on Linux from Windows, use WSL2. NPU support on Linux requires Ubuntu 22.04+ with kernel 6.6+ and the Intel NPU driver (see Troubleshooting section). Linux NPU has not been tested yet.
 
 <details>
 <summary><b>C++ Build & Usage</b></summary>
@@ -50,7 +52,7 @@ cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=[path-to-vcpkg]/scripts/buildsystems/
 cmake --build build --config Release
 ```
 
-**Usage:**
+**Usage (Windows):**
 
 ```bash
 # Transcribe with Parakeet V2
@@ -67,6 +69,25 @@ build/examples/cpp/Release/benchmark_librispeech.exe --max-files 100 --device NP
 
 # Benchmark on FLEURS
 build/examples/cpp/Release/benchmark_fleurs.exe "%LOCALAPPDATA%\eddy\datasets\FLEURS" --device NPU
+```
+
+**Usage (Linux):**
+
+```bash
+# Transcribe with Parakeet V2
+./build/examples/cpp/parakeet_cli audio.wav --model parakeet-v2
+
+# Transcribe with NPU acceleration (requires Intel NPU driver)
+./build/examples/cpp/parakeet_cli audio.wav --model parakeet-v2 --device NPU
+
+# Transcribe with Parakeet V3 (multilingual)
+./build/examples/cpp/parakeet_cli audio.wav --model parakeet-v3 --device NPU
+
+# Benchmark on LibriSpeech
+./build/examples/cpp/benchmark_librispeech --max-files 100 --device NPU
+
+# Benchmark on FLEURS
+./build/examples/cpp/benchmark_fleurs ~/.cache/eddy/datasets/FLEURS --device NPU
 ```
 
 </details>
@@ -195,10 +216,49 @@ int main() {
 <details>
 <summary><b>NPU Not Detected</b></summary>
 
+**Windows:**
 Check for Intel Core Ultra (Meteor Lake or newer):
 ```bash
 build/examples/cpp/Release/parakeet_cli.exe --list-devices
 ```
+
+**Linux:**
+NPU support requires the Intel NPU driver. Check if your system meets the requirements:
+
+> **Note:** Linux NPU support has not been tested yet. The instructions below are based on Intel's official documentation.
+
+**Requirements:**
+- Ubuntu 22.04+ with kernel 6.6+
+- Intel Core Ultra (Meteor Lake) or newer processor
+
+**Installation:**
+```bash
+# 1. Install dependencies
+sudo apt update
+sudo apt install libtbb12
+
+# 2. Download NPU driver packages from https://github.com/intel/linux-npu-driver/releases
+# Download: intel-driver-compiler-npu, intel-fw-npu, intel-level-zero-npu
+
+# 3. Install packages
+sudo dpkg -i *.deb
+
+# 4. Set up permissions
+sudo usermod -a -G render $USER
+sudo chown root:render /dev/accel/accel0
+sudo chmod g+rw /dev/accel/accel0
+
+# 5. Reboot
+sudo reboot
+```
+
+**Verify installation:**
+```bash
+ls -l /dev/accel/accel0
+./build/examples/cpp/parakeet_cli --list-devices
+```
+
+See [github.com/intel/linux-npu-driver](https://github.com/intel/linux-npu-driver) for detailed installation instructions.
 
 </details>
 
@@ -247,7 +307,7 @@ build/examples/cpp/Release/parakeet_cli.exe --version
 
 **Apache 2.0** - See [LICENSE](LICENSE) for details.
 
-Third-party model licenses may vary. See [THIRDPARTY_LICENSES](THIRDPARTY_LICENSES.md) for details on Parakeet TDT models (CC-BY-4.0) and other dependencies.
+Third-party model licenses may vary. See [ThirdPartyLicenses/](ThirdPartyLicenses/) for details on Parakeet TDT models (CC-BY-4.0) and other dependencies.
 
 ## Links
 
