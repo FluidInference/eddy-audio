@@ -1,48 +1,40 @@
 # eddy
 
-**eddy** is a high-performance audio-based AI library for Windows and Linux, bringing FluidAudio's capabilities to non-Apple devices. Optimized for Intel NPUs, GPUs, and CPUs, eddy powers private, offline automatic speech recognition (ASR) with support for multiple hardware accelerators planned.
+**eddy** is a high-performance audio-based AI library for Windows and Linux optimized for Intel NPUs and CPUs; eddy powers private, offline automatic speech recognition (ASR) with support for multiple hardware accelerators planned.
 
 [![Discord](https://img.shields.io/badge/Discord-Join%20Chat-7289da.svg)](https://discord.gg/WNsvaCtmDe)
 [![GitHub Stars](https://img.shields.io/github/stars/FluidInference/eddy?style=flat&logo=github)](https://github.com/FluidInference/eddy)
 
-## Highlights
+## Overview
 
-- **Fast**: Up to 45× real-time on NPU
 - **Private**: Fully on-device inference, no network calls after model download
-- **Multilingual**: 24 European languages supported
+- **Multilingual**: 24 European languages supported (Parakeet V3)
 - **Cross-platform**: Windows 10/11, Linux (Ubuntu 20.04+)
-- **Hardware Accelerated**: Optimized for NPUs, GPUs, and CPUs with support for additional accelerators (Qualcomm, AMD) planned
-
-## Platform Support
-
-- **Windows & Linux**: eddy (this library)
+- **NPU Optimized**: Designed for Intel NPUs and CPUs with support for additional accelerators (Qualcomm, AMD) planned
 - **Apple devices** (macOS/iOS): [FluidAudio](https://github.com/FluidInference/FluidAudio)
 
 ## Quick Start
 
-### Python (Recommended)
-
-The easiest way to use eddy is through Python:
+### Python
 
 ```bash
-# Clone and install
+# Clone repository
 git clone https://github.com/FluidInference/eddy.git
 cd eddy
 
-# Install with uv (recommended) or pip
-uv pip install -e .
-# or: pip install -e .
+# Build C++ library
+cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=[path-to-vcpkg]/scripts/buildsystems/vcpkg.cmake
+cmake --build build --config Release
 
-# Transcribe audio
+# Run FLEURS multilingual benchmark
 python benchmark_fleurs.py --languages en_us --samples 10 --device NPU
 
-# Or use the C library directly
-from ctypes import *
-lib = CDLL("path/to/eddy.dll")
-# See examples/python/ for full examples
+# Or run LibriSpeech benchmark
+cd benchmarks
+uv run python benchmark.py --max-files 10 --device NPU
 ```
 
-Models auto-download on first run from HuggingFace.
+Models auto-download on first run from HuggingFace. See [benchmark_fleurs.py](benchmark_fleurs.py) and [benchmarks/benchmark.py](benchmarks/benchmark.py) for Python usage via ctypes.
 
 <details>
 <summary><b>C++ Build & Usage</b></summary>
@@ -61,44 +53,47 @@ cmake --build build --config Release
 **Usage:**
 
 ```bash
-# Transcribe with Parakeet V2 (English, best accuracy)
+# Transcribe with Parakeet V2
 build/examples/cpp/Release/parakeet_cli.exe audio.wav --model parakeet-v2
 
-# Use NPU for 5-8× speedup over CPU
+# Transcribe with NPU acceleration
 build/examples/cpp/Release/parakeet_cli.exe audio.wav --model parakeet-v2 --device NPU
 
-# Transcribe with Parakeet V3 (24 languages)
+# Transcribe with Parakeet V3 (multilingual)
 build/examples/cpp/Release/parakeet_cli.exe audio.wav --model parakeet-v3 --device NPU
 
-# Benchmark on LibriSpeech test-clean (English)
+# Benchmark on LibriSpeech
 build/examples/cpp/Release/benchmark_librispeech.exe --max-files 100 --device NPU
 
-# Benchmark on FLEURS (multilingual, 24 languages)
+# Benchmark on FLEURS
 build/examples/cpp/Release/benchmark_fleurs.exe "%LOCALAPPDATA%\eddy\datasets\FLEURS" --device NPU
 ```
 
 </details>
 
-## Models
+## Models & Performance
 
-| Model | Languages | WER | Speed (NPU) | Size | HuggingFace |
-|-------|-----------|-----|-------------|------|-------------|
-| **Parakeet V2** | English only | 2.76% | 41× RTFx | 600MB | [v2-ov](https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v2-ov) |
-| **Parakeet V3** | 24 European | 6.09% EN<br>16.98% avg | 41× RTFx | 1.1GB | [v3-ov](https://huggingface.co/FluidInference/parakeet-tdt-1.1b-v3-ov) |
+Benchmarked on Intel Core Ultra 7 155H (Meteor Lake) with Intel AI Boost NPU.
 
-**V3 Languages**: English, Spanish, Italian, French, German, Dutch, Russian, Polish, Ukrainian, Slovak, Bulgarian, Finnish, Romanian, Croatian, Czech, Swedish, Estonian, Hungarian, Lithuanian, Danish, Maltese, Slovenian, Latvian, Greek
+### Parakeet V2 (English)
+- **Languages**: English only
+- **WER**: 2.76% (LibriSpeech test-clean)
+- **Speed**: 38× RTFx (NPU), 5-8× RTFx (CPU)
+- **Size**: 600MB
+- **Download**: [parakeet-tdt-0.6b-v2-ov](https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v2-ov)
 
-## Performance
+### Parakeet V3 (Multilingual)
+- **Languages**: 24 European languages
+- **WER**: 6.09% English, 17.0% average across all languages (FLEURS)
+- **Speed**: 41× RTFx (NPU), 5-8× RTFx (CPU)
+- **Size**: 1.1GB
+- **Download**: [parakeet-tdt-1.1b-v3-ov](https://huggingface.co/FluidInference/parakeet-tdt-1.1b-v3-ov)
 
-| Device | RTFx | Power | Best For |
-|--------|------|-------|----------|
-| **NPU** | 40-45× | Lowest | Laptops (Core Ultra) |
-| **GPU** | 15-25× | Medium | Desktops with discrete GPU |
-| **CPU** | 5-8× | Higher | Compatibility |
+**Supported Languages**: English, Spanish, Italian, French, German, Dutch, Russian, Polish, Ukrainian, Slovak, Bulgarian, Finnish, Romanian, Croatian, Czech, Swedish, Estonian, Hungarian, Lithuanian, Danish, Maltese, Slovenian, Latvian, Greek
 
 > **RTFx** = Real-Time Factor. 41× means 10 minutes of audio transcribed in ~15 seconds.
 
-See [FLEURS_BENCHMARK.md](FLEURS_BENCHMARK.md) for detailed multilingual benchmark results.
+See [BENCHMARK_RESULTS.md](BENCHMARK_RESULTS.md) for detailed performance metrics.
 
 ## Architecture
 
@@ -116,25 +111,12 @@ eddy uses a 4-model **FastConformer-RNNT** pipeline:
 - Per-token timestamps (80ms granularity) and confidence scores
 - Greedy decoding for low-latency inference
 
-## Repository Layout
-
-- [include/](include/) - Public C++ API headers
-- [src/](src/) - Backend implementations and model inference code
-- [examples/cpp/](examples/cpp/) - CLI tools and benchmarks
-- [documentation/](documentation/) - Design docs and guides
-- [FLEURS_BENCHMARK.md](FLEURS_BENCHMARK.md) - Multilingual benchmark details
-- [PARAKEET_V2_MODEL_CARD.md](PARAKEET_V2_MODEL_CARD.md) - V2 model documentation
-- [README_V3_HUGGINGFACE.md](README_V3_HUGGINGFACE.md) - V3 model documentation
-
 ## Dependencies
 
 ### Required
 - **OpenVINO** (2025.x) - AI inference runtime
 - **libsndfile** - Audio file I/O (WAV, FLAC, OGG)
 - **libsamplerate** - High-quality audio resampling
-
-### Optional
-- **OpenVINO GenAI** - For Whisper model support (enabled by default, disable with `-DEDDY_ENABLE_WHISPER=OFF`)
 
 ### Installing with vcpkg (recommended)
 
@@ -177,20 +159,6 @@ Models auto-download on first run and are cached at:
 To disable auto-download: `set EDDY_DISABLE_AUTO_FETCH=1`
 
 Manual download: `build/examples/cpp/Release/hf_fetch_models.exe --model parakeet-v3`
-
-## Python API (Coming Soon)
-
-```python
-from eddy import ParakeetASR
-
-# Initialize with NPU acceleration
-asr = ParakeetASR(model="parakeet-v3", device="NPU")
-
-# Transcribe audio file
-result = asr.transcribe("audio.wav")
-print(f"Text: {result['text']}")
-print(f"WER: {result['wer']:.2f}%, RTFx: {result['rtfx']:.1f}×")
-```
 
 ## C++ API
 
@@ -237,9 +205,9 @@ build/examples/cpp/Release/parakeet_cli.exe --list-devices
 <details>
 <summary><b>Slow Performance</b></summary>
 
-- Use `--device NPU` for 5-8× speedup over CPU
 - Ensure OpenVINO 2025.x is installed
-- On CPU, 5-8× RTFx is expected
+- Try `--device NPU` for NPU acceleration (optimized for Intel Core Ultra)
+- See the Performance section above for expected speed on each device
 
 </details>
 
@@ -247,8 +215,8 @@ build/examples/cpp/Release/parakeet_cli.exe --list-devices
 <summary><b>Model Configuration Issues</b></summary>
 
 Ensure you're using the correct model configuration:
-- V2: `blank_token_id = 1024` (English only)
-- V3: `blank_token_id = 8192` (multilingual)
+- V2: `blank_token_id = 1024`
+- V3: `blank_token_id = 8192`
 
 ```bash
 # Verify model version
