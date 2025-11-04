@@ -1,27 +1,53 @@
 # eddy
 
-**eddy** is a high-performance C++ inference library for automatic speech recognition (ASR), optimized for Intel NPUs, GPUs, and CPUs on Windows and Linux. Built on OpenVINO 2025.x, eddy powers private, offline transcription with the Parakeet TDT model family.
+**eddy** is a high-performance audio-based AI library for Windows and Linux, bringing FluidAudio's capabilities to non-Apple devices. Optimized for Intel NPUs, GPUs, and CPUs, eddy powers private, offline automatic speech recognition (ASR) with support for multiple hardware accelerators planned.
 
 [![Discord](https://img.shields.io/badge/Discord-Join%20Chat-7289da.svg)](https://discord.gg/WNsvaCtmDe)
 [![GitHub Stars](https://img.shields.io/github/stars/FluidInference/eddy?style=flat&logo=github)](https://github.com/FluidInference/eddy)
 
 ## Highlights
 
-- **🚀 Fast**: 40-45× real-time on Intel NPU (10 min audio in ~15 seconds)
-- **🔒 Private**: Fully on-device inference, no network calls after model download
-- **🌍 Multilingual**: Parakeet V3 supports 24 European languages
-- **🎯 Accurate**: V2 achieves 2.76% WER on LibriSpeech test-clean (English)
-- **💻 Cross-platform**: Windows 10/11, Linux (Ubuntu 20.04+)
-- **⚡ NPU Accelerated**: Optimized for Intel Core Ultra (Meteor Lake, Lunar Lake)
+- **Fast**: Up to 45× real-time on NPU
+- **Private**: Fully on-device inference, no network calls after model download
+- **Multilingual**: 24 European languages supported
+- **Cross-platform**: Windows 10/11, Linux (Ubuntu 20.04+)
+- **Hardware Accelerated**: Optimized for NPUs, GPUs, and CPUs with support for additional accelerators (Qualcomm, AMD) planned
 
 ## Platform Support
 
-- **Supported**: Windows and Linux
-- **Not supported**: Apple platforms (macOS/iOS) - use [FluidAudio](https://github.com/FluidInference/FluidAudio) instead
+- **Windows & Linux**: eddy (this library)
+- **Apple devices** (macOS/iOS): [FluidAudio](https://github.com/FluidInference/FluidAudio)
 
 ## Quick Start
 
-### Installation
+### Python (Recommended)
+
+The easiest way to use eddy is through Python:
+
+```bash
+# Clone and install
+git clone https://github.com/FluidInference/eddy.git
+cd eddy
+
+# Install with uv (recommended) or pip
+uv pip install -e .
+# or: pip install -e .
+
+# Transcribe audio
+python benchmark_fleurs.py --languages en_us --samples 10 --device NPU
+
+# Or use the C library directly
+from ctypes import *
+lib = CDLL("path/to/eddy.dll")
+# See examples/python/ for full examples
+```
+
+Models auto-download on first run from HuggingFace.
+
+<details>
+<summary><b>C++ Build & Usage</b></summary>
+
+For advanced users who want to build from source:
 
 ```bash
 git clone https://github.com/FluidInference/eddy.git
@@ -32,13 +58,13 @@ cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=[path-to-vcpkg]/scripts/buildsystems/
 cmake --build build --config Release
 ```
 
-### Usage
+**Usage:**
 
 ```bash
 # Transcribe with Parakeet V2 (English, best accuracy)
 build/examples/cpp/Release/parakeet_cli.exe audio.wav --model parakeet-v2
 
-# Use NPU for 6-10× speedup
+# Use NPU for 5-8× speedup over CPU
 build/examples/cpp/Release/parakeet_cli.exe audio.wav --model parakeet-v2 --device NPU
 
 # Transcribe with Parakeet V3 (24 languages)
@@ -51,7 +77,7 @@ build/examples/cpp/Release/benchmark_librispeech.exe --max-files 100 --device NP
 build/examples/cpp/Release/benchmark_fleurs.exe "%LOCALAPPDATA%\eddy\datasets\FLEURS" --device NPU
 ```
 
-Models auto-download on first run from HuggingFace.
+</details>
 
 ## Models
 
@@ -60,31 +86,19 @@ Models auto-download on first run from HuggingFace.
 | **Parakeet V2** | English only | 2.76% | 41× RTFx | 600MB | [v2-ov](https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v2-ov) |
 | **Parakeet V3** | 24 European | 6.09% EN<br>16.98% avg | 41× RTFx | 1.1GB | [v3-ov](https://huggingface.co/FluidInference/parakeet-tdt-1.1b-v3-ov) |
 
-**V3 Languages**: 🇬🇧 English • 🇪🇸 Spanish • 🇮🇹 Italian • 🇫🇷 French • 🇩🇪 German • 🇳🇱 Dutch • 🇷🇺 Russian • 🇵🇱 Polish • 🇺🇦 Ukrainian • 🇸🇰 Slovak • 🇧🇬 Bulgarian • 🇫🇮 Finnish • 🇷🇴 Romanian • 🇭🇷 Croatian • 🇨🇿 Czech • 🇸🇪 Swedish • 🇪🇪 Estonian • 🇭🇺 Hungarian • 🇱🇹 Lithuanian • 🇩🇰 Danish • 🇲🇹 Maltese • 🇸🇮 Slovenian • 🇱🇻 Latvian • 🇬🇷 Greek
+**V3 Languages**: English, Spanish, Italian, French, German, Dutch, Russian, Polish, Ukrainian, Slovak, Bulgarian, Finnish, Romanian, Croatian, Czech, Swedish, Estonian, Hungarian, Lithuanian, Danish, Maltese, Slovenian, Latvian, Greek
 
 ## Performance
 
-### Device Comparison
-
 | Device | RTFx | Power | Best For |
 |--------|------|-------|----------|
-| **Intel NPU** | 40-45× | Lowest | Laptops (Core Ultra) |
+| **NPU** | 40-45× | Lowest | Laptops (Core Ultra) |
 | **GPU** | 15-25× | Medium | Desktops with discrete GPU |
 | **CPU** | 5-8× | Higher | Compatibility |
 
 > **RTFx** = Real-Time Factor. 41× means 10 minutes of audio transcribed in ~15 seconds.
 
-### Benchmarks
-
-**Parakeet V2 - LibriSpeech test-clean (English)**
-- WER: 2.76% | CER: 1.13% | RTFx: 41.36× (Intel NPU)
-- Tested on: 100 samples, Intel Core Ultra 7 258V
-
-**Parakeet V3 - FLEURS (24 Languages)**
-- Average WER: 16.98% | Average CER: 5.39% | RTFx: 41.1×
-- Best: Italian (4.30%), Spanish (5.44%), English (6.09%)
-
-See [FLEURS_BENCHMARK.md](FLEURS_BENCHMARK.md) for detailed multilingual results.
+See [FLEURS_BENCHMARK.md](FLEURS_BENCHMARK.md) for detailed multilingual benchmark results.
 
 ## Architecture
 
@@ -196,36 +210,43 @@ int main() {
 }
 ```
 
-## Hardware Requirements
-
-### Minimum
-- **CPU**: Intel Core (Gen 10+), AMD Ryzen
-- **RAM**: 8GB
-- **Storage**: 2GB for models
-
-### Recommended (NPU Acceleration)
-- **CPU**: Intel Core Ultra (Meteor Lake, Lunar Lake)
-- **NPU**: Intel AI Boost (4th gen, 48 TOPS)
-- **RAM**: 16GB
-- **OS**: Windows 11 or Linux with NPU drivers
-
 ## Roadmap
 
-- ✅ Parakeet V2/V3 OpenVINO inference
-- ✅ NPU/GPU/CPU multi-device support
-- ✅ LibriSpeech and FLEURS benchmarks
-- ⏳ Streaming inference (buffered real-time transcription)
-- ⏳ Python bindings (C API complete, wrapper in progress)
-- ⏳ Voice Activity Detection (VAD) preprocessing
-- 🔮 C# bindings for .NET applications
-- 🔮 Qualcomm QNN backend (Snapdragon NPU)
-- 🔮 AMD MIGraphX backend (Ryzen AI)
+- Parakeet V2/V3 OpenVINO inference ✓
+- NPU/GPU/CPU multi-device support ✓
+- LibriSpeech and FLEURS benchmarks ✓
+- Python bindings (C API complete, wrapper in progress)
+- Voice Activity Detection (VAD) preprocessing
+- C# bindings for .NET applications
+- Qualcomm QNN backend (Snapdragon NPU)
+- AMD Ryzen AI Software backend
+- Additional audio model support
 
 ## Troubleshooting
 
-### High WER (>90%)
+<details>
+<summary><b>NPU Not Detected</b></summary>
 
-Ensure you're using the correct model:
+Check for Intel Core Ultra (Meteor Lake or newer):
+```bash
+build/examples/cpp/Release/parakeet_cli.exe --list-devices
+```
+
+</details>
+
+<details>
+<summary><b>Slow Performance</b></summary>
+
+- Use `--device NPU` for 5-8× speedup over CPU
+- Ensure OpenVINO 2025.x is installed
+- On CPU, 5-8× RTFx is expected
+
+</details>
+
+<details>
+<summary><b>Model Configuration Issues</b></summary>
+
+Ensure you're using the correct model configuration:
 - V2: `blank_token_id = 1024` (English only)
 - V3: `blank_token_id = 8192` (multilingual)
 
@@ -234,18 +255,7 @@ Ensure you're using the correct model:
 build/examples/cpp/Release/parakeet_cli.exe --version
 ```
 
-### NPU Not Detected
-
-Check for Intel Core Ultra (Meteor Lake or newer):
-```bash
-build/examples/cpp/Release/parakeet_cli.exe --list-devices
-```
-
-### Slow Performance
-
-- Use `--device NPU` for 6-10× speedup over CPU
-- Ensure OpenVINO 2025.x is installed
-- On CPU, 5-8× RTFx is expected
+</details>
 
 ## Citation
 
@@ -267,7 +277,9 @@ build/examples/cpp/Release/parakeet_cli.exe --list-devices
 
 ## License
 
-**CC-BY-4.0** - See [LICENSE](LICENSE) for details.
+**Apache 2.0** - See [LICENSE](LICENSE) for details.
+
+Third-party model licenses may vary. See [THIRDPARTY_LICENSES](THIRDPARTY_LICENSES.md) for details on Parakeet TDT models (CC-BY-4.0) and other dependencies.
 
 ## Links
 
