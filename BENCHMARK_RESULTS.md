@@ -3,7 +3,7 @@
 Comprehensive benchmark results for eddy ASR on LibriSpeech test-clean and FLEURS multilingual datasets.
 
 **Hardware**: Intel Core Ultra 7 155H (Meteor Lake) with Intel AI Boost NPU
-**Software**: OpenVINO 2025.x
+**Software**: OpenVINO 2025.3.0
 **Normalization**: OpenAI Whisper English normalizer
 
 ---

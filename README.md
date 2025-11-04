@@ -105,7 +105,7 @@ Benchmarked on Intel Core Ultra 7 155H (Meteor Lake):
 
 **Parakeet V3 Languages**: English, Spanish, Italian, French, German, Dutch, Russian, Polish, Ukrainian, Slovak, Bulgarian, Finnish, Romanian, Croatian, Czech, Swedish, Estonian, Hungarian, Lithuanian, Danish, Maltese, Slovenian, Latvian, Greek
 
-**Benchmarks**: See [BENCHMARK.md](BENCHMARK.md) for detailed results and instructions.
+**Benchmarks**: See [BENCHMARK_RESULTS.md](BENCHMARK_RESULTS.md) for detailed results.
 
 ## Roadmap
 
