@@ -1,14 +1,16 @@
 # eddy
 
-> In fluid dynamics, an eddy is the swirling of a fluid and the reverse current created when the fluid is in a turbulent flow regime.
-
 [![Discord](https://img.shields.io/badge/Discord-Join%20Chat-7289da.svg)](https://discord.gg/WNsvaCtmDe)
 [![GitHub Stars](https://img.shields.io/github/stars/FluidInference/eddy?style=flat&logo=github)](https://github.com/FluidInference/eddy)
-[![Apple SDK](https://img.shields.io/github/stars/FluidInference/FluidAudio?style=flat&logo=github)](https://github.com/FluidInference/FluidAudio)
+
+> In fluid dynamics, an eddy is the swirling of a fluid and the reverse current created when the fluid is in a turbulent flow regime.
+
+![banner.jpg](banner.jpg)
 
 **C++ inference library for multi-vendor edge NPUs.** Current focus: OpenVINO 2025.x backend for Parakeet-TDT and Whisper models. Additional runtimes (Qualcomm QNN, AMD Ryzen AI Software) coming soon.
 
-For Apple platforms (macOS/iOS), use [FluidAudio](https://github.com/FluidInference/FluidAudio).
+For Apple platforms (macOS/iOS), use [FluidAudio](https://github.com/FluidInference/FluidAudio) [![Apple SDK](https://img.shields.io/github/stars/FluidInference/FluidAudio?style=flat&logo=github)](https://github.com/FluidInference/FluidAudio)
+
 
 **Model Cards:**
 - [Parakeet V2 (English)](https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v2-ov)
