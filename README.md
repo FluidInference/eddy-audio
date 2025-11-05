@@ -1,5 +1,7 @@
 # eddy
 
+> In fluid dynamics, an eddy is the swirling of a fluid and the reverse current created when the fluid is in a turbulent flow regime.
+
 [![Discord](https://img.shields.io/badge/Discord-Join%20Chat-7289da.svg)](https://discord.gg/WNsvaCtmDe)
 [![GitHub Stars](https://img.shields.io/github/stars/FluidInference/eddy?style=flat&logo=github)](https://github.com/FluidInference/eddy)
 
