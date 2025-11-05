@@ -4,6 +4,7 @@
 
 [![Discord](https://img.shields.io/badge/Discord-Join%20Chat-7289da.svg)](https://discord.gg/WNsvaCtmDe)
 [![GitHub Stars](https://img.shields.io/github/stars/FluidInference/eddy?style=flat&logo=github)](https://github.com/FluidInference/eddy)
+[![Apple SDK](https://img.shields.io/github/stars/FluidInference/FluidAudio?style=flat&logo=github)](https://github.com/FluidInference/FluidAudio)
 
 **C++ inference library for multi-vendor edge NPUs.** Current focus: OpenVINO 2025.x backend for Parakeet-TDT and Whisper models. Additional runtimes (Qualcomm QNN, AMD Ryzen AI Software) coming soon.
 
