@@ -392,6 +392,12 @@ void OpenVINOParakeet::ensure_compiled_model() const {
     const auto mel_shape = impl_->encoder_ports.mel_in.value().get_shape();
     impl_->encoder_expected_frames = mel_shape.empty() ? 0U : mel_shape.back();
 
+    // Fallback for dynamic shapes: Use 1250 frames (10 seconds at 125 frames/sec mel rate)
+    // This enables chunking for models with dynamic encoder inputs
+    if (impl_->encoder_expected_frames == 0) {
+        impl_->encoder_expected_frames = 1250;
+    }
+
     // ========================================
     // Determine encoder output indices and hidden size
     // ========================================

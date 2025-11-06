@@ -44,6 +44,17 @@ MelFeatures run_preprocessor(ParakeetImpl& impl, const AudioSegment& segment) {
     throw std::invalid_argument("Parakeet OpenVINO pipeline expects 16 kHz audio samples");
   }
 
+  // Workaround for v3 preprocessor bug: round sample count to nearest 1000
+  // v3 fails on specific odd-length audio (e.g., 240,135 samples)
+  AudioSegment working_segment = segment;
+  const size_t original_size = segment.pcm.size();
+  const size_t round_to = 1000;
+  const size_t rounded_size = ((original_size + round_to - 1) / round_to) * round_to;
+
+  if (rounded_size != original_size) {
+    working_segment.pcm.resize(rounded_size, 0.0F);  // Pad with zeros
+  }
+
   // Query preprocessor window size from compiled model shape.
   // The Parakeet ONNX model always has static shape [1, 160000], but OpenVINO
   // may compile it with dynamic shapes for optimization (especially on CPU).
@@ -63,6 +74,12 @@ MelFeatures run_preprocessor(ParakeetImpl& impl, const AudioSegment& segment) {
     if (len_dim.is_static() && len_dim.get_length() > 0) {
       window_samples = static_cast<size_t>(len_dim.get_length());
     }
+  }
+
+  // Enforce maximum window size for dynamic models
+  // v3 preprocessor has dynamic shape - use same 10s windows as v2
+  if (window_samples == 0 && working_segment.pcm.size() > 160000) {
+    window_samples = 160000;  // 10 seconds at 16kHz (matches v2)
   }
 
   // Query length input type once (fixed at model export)
@@ -110,8 +127,8 @@ MelFeatures run_preprocessor(ParakeetImpl& impl, const AudioSegment& segment) {
   // ========================================
   // Single-shot path: Dynamically compiled model OR short audio that fits in one window
   // ========================================
-  if (window_samples == 0 || segment.pcm.size() <= window_samples) {
-    auto [mel_tensor, length_tensor] = run_window(segment.pcm.data(), segment.pcm.size());
+  if (window_samples == 0 || working_segment.pcm.size() <= window_samples) {
+    auto [mel_tensor, length_tensor] = run_window(working_segment.pcm.data(), working_segment.pcm.size());
 
     const int64_t valid_frames = read_length_scalar(length_tensor);
     if (valid_frames <= 0) {
@@ -148,7 +165,7 @@ MelFeatures run_preprocessor(ParakeetImpl& impl, const AudioSegment& segment) {
   // ========================================
   } else {
     constexpr size_t kMelBins = 128;
-    const size_t total_samples = segment.pcm.size();
+    const size_t total_samples = working_segment.pcm.size();
 
     std::vector<std::vector<float>> mel_bins(kMelBins);
     size_t offset = 0;
@@ -158,7 +175,7 @@ MelFeatures run_preprocessor(ParakeetImpl& impl, const AudioSegment& segment) {
       const size_t remaining = total_samples - offset;
       const size_t this_count = std::min(window_samples, remaining);
 
-      auto [mel_tensor, length_tensor] = run_window(segment.pcm.data() + offset, this_count);
+      auto [mel_tensor, length_tensor] = run_window(working_segment.pcm.data() + offset, this_count);
       const int64_t vframes = read_length_scalar(length_tensor);
 
       if (vframes <= 0) {
