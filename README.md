@@ -19,9 +19,64 @@ For Apple platforms (macOS/iOS), use [FluidAudio](https://github.com/FluidInfere
 
 ## Building
 
+### Prerequisites
+
+#### 1. Install OpenVINO 2025.x
+
+**Windows:**
+Download and install from [OpenVINO Toolkit Downloads](https://www.intel.com/content/www/us/en/developer/tools/openvino-toolkit/download.html)
+
+Default location: `C:\Program Files (x86)\Intel\openvino_2025.0.0\`
+
+**Add OpenVINO to PATH** (required for runtime):
+```bash
+# Add to your system PATH or run before using executables:
+set PATH=%PATH%;C:\Program Files (x86)\Intel\openvino_2025.0.0\runtime\bin\intel64\Release
+```
+
+**Linux:**
+```bash
+# Download and install from intel.com/openvino or use APT
+wget https://storage.openvinotoolkit.org/repositories/openvino/packages/2025.0/linux/l_openvino_toolkit_ubuntu22_2025.0.0.tar.gz
+tar -xvzf l_openvino_toolkit_ubuntu22_2025.0.0.tar.gz
+cd l_openvino_toolkit_ubuntu22_2025.0.0
+sudo ./install_openvino_dependencies.sh
+source setupvars.sh
+```
+
+#### 2. Install Build Tools
+
+**Windows:**
+- [CMake 3.16+](https://cmake.org/download/)
+- [Visual Studio 2019/2022](https://visualstudio.microsoft.com/) with C++ Desktop Development workload
+- Git (for vcpkg)
+
+**Linux:**
+```bash
+sudo apt install cmake build-essential git
+```
+
+#### 3. Install vcpkg
+
+**Windows:**
+```bash
+git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
+cd C:\vcpkg
+.\bootstrap-vcpkg.bat
+```
+
+**Linux/macOS:**
+```bash
+git clone https://github.com/microsoft/vcpkg.git ~/vcpkg
+cd ~/vcpkg
+./bootstrap-vcpkg.sh
+```
+
+### Build with vcpkg
+
 ```bash
 # Configure with vcpkg toolchain
-cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=[path-to-vcpkg]/scripts/buildsystems/vcpkg.cmake
+cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake
 
 # Or specify OpenVINO manually if not using vcpkg
 cmake -S . -B build -DOpenVINO_DIR=/opt/intel/openvino/runtime/cmake
@@ -32,8 +87,29 @@ cmake --build build --config Release
 
 The build produces:
 - **Static library**: `eddy` (linkable C++ library)
-- **CLI tools**: `parakeet_cli.exe`, `whisper_example.exe` (examples)
+- **CLI tools**: `parakeet_cli.exe`, `hf_fetch_models.exe` (examples)
 - **Benchmarks**: `benchmark_librispeech.exe`, `benchmark_fleurs.exe`
+
+### Quick Start
+
+**Download models** (first time only):
+```bash
+# Windows (with OpenVINO in PATH)
+build\examples\cpp\Release\hf_fetch_models.exe --model parakeet-v2
+
+# Linux
+build/examples/cpp/hf_fetch_models --model parakeet-v2
+```
+
+**Test transcription:**
+```bash
+# Create test audio or use your own 16kHz WAV file
+build\examples\cpp\Release\parakeet_cli.exe audio.wav --model parakeet-v2 --device CPU
+```
+
+Models auto-download on first inference if not manually fetched. Cached in:
+- **Windows**: `%LOCALAPPDATA%\eddy\models\parakeet-v2\files`
+- **Linux**: `~/.cache/eddy/models/parakeet-v2/files`
 
 ### Optional: Whisper Support
 
@@ -47,21 +123,21 @@ cmake -S . -B build -DEDDY_ENABLE_WHISPER=ON -DOpenVINOGenAI_DIR="<path-to-genai
 
 ### Basic Transcription
 
-**Parakeet V2** (English only):
+**Parakeet V2** (English only, 600MB):
 ```bash
+# NPU (Intel Core Ultra)
 build/examples/cpp/Release/parakeet_cli.exe audio.wav --model parakeet-v2 --device NPU
+
+# CPU (any x86_64)
+build/examples/cpp/Release/parakeet_cli.exe audio.wav --model parakeet-v2 --device CPU
 ```
 
-**Parakeet V3** (Multilingual - 24 languages):
+**Parakeet V3** (Multilingual - 24 languages, 1.1GB):
 ```bash
-# English (default)
-build/examples/cpp/Release/parakeet_cli.exe audio.wav --model parakeet-v3 --device NPU
+# English
+build/examples/cpp/Release/parakeet_cli.exe audio.wav --model parakeet-v3 --device CPU
 
-# Spanish
-build/examples/cpp/Release/parakeet_cli.exe audio_es.wav --model parakeet-v3 --language es --device NPU
-
-# French
-build/examples/cpp/Release/parakeet_cli.exe audio_fr.wav --model parakeet-v3 --language fr --device NPU
+# Note: V3 currently only tested with English. Multilingual support coming soon.
 ```
 
 **Whisper** (if built with `EDDY_ENABLE_WHISPER=ON`):
@@ -71,15 +147,18 @@ build/examples/cpp/Release/whisper_example.exe path/to/whisper-model audio.wav N
 
 ### Device Selection
 
-```bash
-# NPU (best performance on Intel Core Ultra)
---device NPU
+| Device | Best For | Performance |
+|--------|----------|-------------|
+| **NPU** | Intel Core Ultra (Meteor Lake+) | 38-41× RTFx |
+| **CPU** | Any x86_64 processor | 8× RTFx |
+| **AUTO** | Let OpenVINO choose | Varies |
 
-# CPU (fallback)
---device CPU
-```
+**Audio Requirements:**
+- Format: WAV (mono or stereo)
+- Sample Rate: 16kHz
+- Bit Depth: 16-bit PCM
 
-Models auto-download from HuggingFace on first run. See [C++ API documentation](docs/CPP_API.md) for library integration.
+See [C++ API documentation](docs/CPP_API.md) for library integration.
 
 ## Models & Performance
 

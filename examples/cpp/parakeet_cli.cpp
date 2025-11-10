@@ -20,6 +20,8 @@
 void print_usage(const char* program_name) {
     std::cout << "Usage: " << program_name << " <audio.wav> [options]\n\n";
     std::cout << "Options:\n";
+    std::cout << "  --model <model>      Model version (default: parakeet-v2)\n";
+    std::cout << "                       Options: parakeet-v2, parakeet-v3\n";
     std::cout << "  --device <device>    OpenVINO device (default: CPU)\n";
     std::cout << "                       Options: CPU, AUTO\n";
     std::cout << "  --help              Show this help message\n\n";
@@ -28,7 +30,7 @@ void print_usage(const char* program_name) {
     std::cout << "  - Models will be loaded from cache or models/parakeet/\n\n";
     std::cout << "Example:\n";
     std::cout << "  " << program_name << " test.wav\n";
-    std::cout << "  " << program_name << " test.wav --device AUTO\n";
+    std::cout << "  " << program_name << " test.wav --model parakeet-v3 --device CPU\n";
 }
 
 int main(int argc, char* argv[]) {
@@ -44,6 +46,7 @@ int main(int argc, char* argv[]) {
 
     std::string audio_file;
     std::string device = "CPU";
+    std::string model_name = "parakeet-v2";
 
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
@@ -51,6 +54,16 @@ int main(int argc, char* argv[]) {
         if (arg == "--help" || arg == "-h") {
             print_usage(argv[0]);
             return 0;
+        } else if (arg == "--model") {
+            if (i + 1 >= argc) {
+                std::cerr << "Error: --model requires an argument\n";
+                return 1;
+            }
+            model_name = argv[++i];
+            if (model_name != "parakeet-v2" && model_name != "parakeet-v3") {
+                std::cerr << "Error: Invalid model. Use 'parakeet-v2' or 'parakeet-v3'\n";
+                return 1;
+            }
         } else if (arg == "--device") {
             if (i + 1 >= argc) {
                 std::cerr << "Error: --device requires an argument\n";
@@ -69,7 +82,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    std::cout << "=== Parakeet TDT v2 Transcription CLI ===\n\n";
+    std::cout << "=== Parakeet TDT Transcription CLI (" << model_name << ") ===\n\n";
 
     try {
         // Load audio file
@@ -85,7 +98,7 @@ int main(int argc, char* argv[]) {
         std::cout << "Initializing OpenVINO backend (" << device << ") ... ";
         std::cout.flush();
         // Set compiled model cache to the per-model cache dir
-        auto compiled_cache_dir = eddy::get_model_dir("parakeet-v2").string();
+        auto compiled_cache_dir = eddy::get_model_dir(model_name).string();
         eddy::OpenVINOOptions ov_opts;
         ov_opts.device = device;
         ov_opts.cache_dir = compiled_cache_dir;
@@ -93,7 +106,7 @@ int main(int argc, char* argv[]) {
         std::cout << "[OK]\n";
 
         // Determine model directory: ensure cache has required files (centralized helper)
-        auto cache_model_dir = eddy::get_model_assets_dir("parakeet-v2");
+        auto cache_model_dir = eddy::get_model_assets_dir(model_name);
         std::filesystem::path model_dir;
         std::string fetch_err;
         if (!eddy::parakeet::check_models_available(cache_model_dir, &fetch_err)) {
@@ -112,7 +125,7 @@ int main(int argc, char* argv[]) {
         } else {
             // Fallback: legacy Windows path (%LOCALAPPDATA%\eddy\cache\models\<name>\files)
 #if defined(_WIN32)
-            auto legacy_dir = eddy::get_app_data_dir() / "cache" / "models" / "parakeet-v2" / "files";
+            auto legacy_dir = eddy::get_app_data_dir() / "cache" / "models" / model_name / "files";
             if (exists_nonempty(legacy_dir / "parakeet_encoder.xml")) {
                 model_dir = legacy_dir;
                 std::cout << "Using legacy cached models at: " << legacy_dir.string() << "\n\n";
@@ -134,10 +147,11 @@ int main(int argc, char* argv[]) {
             .tokenizer_json = (model_dir / "parakeet_vocab.json").string()
         };
 
-        // Configure runtime (v2 uses blank_token_id=1024)
+        // Configure runtime (v2 uses blank_token_id=1024, v3 uses blank_token_id=8192)
+        int blank_token_id = (model_name == "parakeet-v3") ? 8192 : 1024;
         eddy::parakeet::RuntimeConfig cfg{
             .device = device,
-            .blank_token_id = 1024,
+            .blank_token_id = blank_token_id,
             .duration_bins = {0, 1, 2, 3, 4}
         };
 
@@ -228,7 +242,7 @@ int main(int argc, char* argv[]) {
         std::cerr << "\n[ERROR] " << e.what() << "\n\n";
         std::cerr << "Troubleshooting:\n";
         std::cerr << "  1. Ensure audio file is 16kHz WAV format\n";
-        std::cerr << "  2. Check models are in: " << eddy::get_model_assets_dir("parakeet-v2").string() << "\n";
+        std::cerr << "  2. Check models are in: " << eddy::get_model_assets_dir(model_name).string() << "\n";
         std::cerr << "     or in: models/parakeet/\n";
         std::cerr << "  3. Verify OpenVINO runtime is properly installed\n";
         std::cerr << "  4. Try --device CPU if AUTO fails\n";
