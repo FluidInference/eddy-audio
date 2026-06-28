@@ -1,0 +1,110 @@
+// Copyright (C) 2025 Eddy SDK
+// SPDX-License-Identifier: Apache-2.0
+//
+// CLI for the NVIDIA Nemotron-3.5-ASR-Streaming-Multilingual 0.6B backend.
+
+#include "eddy/backends/openvino_backend.hpp"
+#include "eddy/core/app_dir.hpp"
+#include "eddy/models/nemotron/nemotron.hpp"
+#include "eddy/utils/audio_utils.hpp"
+
+#include <chrono>
+#include <filesystem>
+#include <iomanip>
+#include <iostream>
+#include <string>
+
+void print_usage(const char* prog) {
+  std::cout << "Usage: " << prog << " <audio.wav> [options]\n\n";
+  std::cout << "Options:\n";
+  std::cout << "  --device <device>   OpenVINO device (default: CPU). CPU, AUTO, NPU\n";
+  std::cout << "  --lang <code>       Language: en-US, zh-CN, ... or auto (default: auto)\n";
+  std::cout << "  --model-dir <dir>   Directory with nemotron_*.xml/bin + metadata.json\n";
+  std::cout << "                      (default: per-user model cache for 'nemotron-streaming')\n";
+  std::cout << "  --help              Show this help\n";
+}
+
+int main(int argc, char* argv[]) {
+  std::cout.setf(std::ios::unitbuf);
+  if (argc < 2) {
+    print_usage(argv[0]);
+    return 1;
+  }
+
+  std::string audio_file, device = "CPU", lang = "auto", model_dir_arg;
+  for (int i = 1; i < argc; ++i) {
+    std::string a = argv[i];
+    if (a == "--help" || a == "-h") {
+      print_usage(argv[0]);
+      return 0;
+    } else if (a == "--device" && i + 1 < argc) {
+      device = argv[++i];
+    } else if (a == "--lang" && i + 1 < argc) {
+      lang = argv[++i];
+    } else if (a == "--model-dir" && i + 1 < argc) {
+      model_dir_arg = argv[++i];
+    } else {
+      audio_file = a;
+    }
+  }
+  if (audio_file.empty()) {
+    std::cerr << "Error: no audio file specified\n\n";
+    print_usage(argv[0]);
+    return 1;
+  }
+
+  std::cout << "=== Nemotron 3.5 ASR Streaming CLI ===\n\n";
+
+  try {
+    auto pcm = eddy::audio::read_wav(audio_file);
+    const float audio_seconds = static_cast<float>(pcm.size()) / 16000.0f;
+    std::cout << "Audio: " << audio_file << "  (" << std::fixed << std::setprecision(2)
+              << audio_seconds << "s)\n";
+
+    std::filesystem::path model_dir =
+        model_dir_arg.empty() ? eddy::get_model_assets_dir("nemotron-streaming")
+                              : std::filesystem::path(model_dir_arg);
+    std::cout << "Models: " << model_dir.string() << "\n";
+
+    eddy::OpenVINOOptions ov_opts;
+    ov_opts.device = device;
+    ov_opts.cache_dir = eddy::get_model_dir("nemotron-streaming").string();
+    auto backend = std::make_shared<eddy::OpenVINOBackend>(ov_opts);
+
+    eddy::nemotron::ModelPaths paths{
+        .preprocessor = (model_dir / "nemotron_preprocessor.xml").string(),
+        .encoder = (model_dir / "nemotron_encoder.xml").string(),
+        .decoder = (model_dir / "nemotron_decoder.xml").string(),
+        .joint = (model_dir / "nemotron_joint.xml").string(),
+        .vocab_json = (model_dir / "nemotron_vocab.json").string(),
+        .metadata_json = (model_dir / "metadata.json").string(),
+    };
+    eddy::nemotron::Config cfg;
+    cfg.device = device;
+    cfg.language = lang;
+
+    eddy::nemotron::OpenVINONemotron model(backend, paths, cfg);
+    std::cout << "Compiling + warming up (" << device << ") ... ";
+    model.warmup();
+    std::cout << "[OK]\n\n";
+
+    std::cout << std::string(70, '=') << "\nTRANSCRIBING...\n" << std::string(70, '=') << "\n\n";
+    const auto result = model.transcribe(pcm);
+
+    const float rtfx = result.latency_ms > 0.0
+                           ? audio_seconds / static_cast<float>(result.latency_ms / 1000.0)
+                           : 0.0f;
+
+    std::cout << "Result:\n" << std::string(70, '-') << "\n";
+    std::cout << result.text << "\n" << std::string(70, '-') << "\n\n";
+    std::cout << "prompt_id_used:  " << result.prompt_id_used << "\n";
+    std::cout << "detected_lang:   " << (result.detected_language.empty() ? "(none)" : result.detected_language) << "\n";
+    std::cout << "tokens:          " << result.token_ids.size() << "\n";
+    std::cout << "processing time: " << std::fixed << std::setprecision(0) << result.latency_ms << " ms\n";
+    std::cout << "real-time factor:" << std::fixed << std::setprecision(1) << rtfx << "x\n";
+    return 0;
+  } catch (const std::exception& e) {
+    std::cerr << "\n[ERROR] " << e.what() << "\n";
+    return 1;
+  }
+}

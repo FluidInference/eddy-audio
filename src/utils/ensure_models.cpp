@@ -108,8 +108,11 @@ bool download_models(const eddy::ModelConfig& config,
       continue;
     }
 
-    // Construct HuggingFace URL
-    const std::string url = "https://huggingface.co/" + config.repo_id + "/resolve/main/" + filename;
+    // Construct HuggingFace URL. When repo_subdir is set, files live in a
+    // subfolder of the repo (e.g. "fp16/") but are still stored flat locally.
+    const std::string remote_rel =
+        config.repo_subdir.empty() ? filename : config.repo_subdir + "/" + filename;
+    const std::string url = "https://huggingface.co/" + config.repo_id + "/resolve/main/" + remote_rel;
 
     // Notify progress
     if (progress_callback) {

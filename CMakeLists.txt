@@ -61,6 +61,9 @@ target_sources(eddy
     src/models/parakeet-v2/parakeet_decoder.cpp
     src/models/parakeet-v2/parakeet_chunking.cpp
     src/models/parakeet-v2/tokenizer.cpp
+
+    # Nemotron cache-aware streaming implementation
+    src/models/nemotron/nemotron_openvino.cpp
 )
 
 # Link dependencies
