@@ -79,12 +79,34 @@ namespace model_configs {
         .repo_subdir = "int8"
     };
 
+    // NVIDIA nemotron-speech-streaming-en-0.6b: the monolingual (English) sibling
+    // of the multilingual model. Same FastConformer cache-aware RNNT, but no
+    // prompt/language conditioning (the eddy backend auto-detects the absent
+    // encoder prompt_id input). Same flat file set as NEMOTRON_FILES.
+    // NOTE: the OpenVINO IR repo is produced by the mobius export pipeline; until
+    // it is published this config resolves but downloads will 404.
+    inline const ModelConfig NEMOTRON_SPEECH = {
+        .repo_id = "FluidInference/nemotron-speech-streaming-en-0.6b-ov",
+        .required_files = NEMOTRON_FILES,
+        .cache_subdir = "nemotron-speech-streaming",
+        .repo_subdir = "fp16"
+    };
+
+    inline const ModelConfig NEMOTRON_SPEECH_INT8 = {
+        .repo_id = "FluidInference/nemotron-speech-streaming-en-0.6b-ov",
+        .required_files = NEMOTRON_FILES,
+        .cache_subdir = "nemotron-speech-streaming-int8",
+        .repo_subdir = "int8"
+    };
+
     // Model name lookup map
     inline const std::map<std::string, ModelConfig> MODEL_MAP = {
         {"parakeet-v2", PARAKEET_V2},
         {"parakeet-v3", PARAKEET_V3},
         {"nemotron-streaming", NEMOTRON_STREAMING},
-        {"nemotron-streaming-int8", NEMOTRON_STREAMING_INT8}
+        {"nemotron-streaming-int8", NEMOTRON_STREAMING_INT8},
+        {"nemotron-speech-streaming", NEMOTRON_SPEECH},
+        {"nemotron-speech-streaming-int8", NEMOTRON_SPEECH_INT8}
     };
 
     // Default model

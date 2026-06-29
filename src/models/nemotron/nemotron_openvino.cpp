@@ -133,6 +133,12 @@ struct OpenVINONemotron::Impl {
   std::map<std::string, int> prompt_dictionary;
   std::set<int> lang_tag_token_ids;
 
+  // Whether the encoder takes a `prompt_id` input. True for the multilingual
+  // model (per-chunk language conditioning); false for the monolingual English
+  // speech-streaming model. Auto-detected from the encoder's input ports so one
+  // backend serves both variants.
+  bool has_prompt = false;
+
   ov::element::Type token_et = ov::element::i32;
 
   std::once_flag compile_once;
@@ -275,6 +281,14 @@ void OpenVINONemotron::ensure_compiled() const {
     impl_->decoder_req = impl_->decoder.create_infer_request();
     impl_->joint_req = impl_->joint.create_infer_request();
 
+    // Detect prompt conditioning from the encoder's input ports: the
+    // multilingual encoder has a "prompt_id" input; the English speech-streaming
+    // encoder does not. Drives whether transcribe() feeds a prompt_id tensor.
+    impl_->has_prompt = false;
+    for (const auto& in : impl_->encoder.inputs()) {
+      if (in.get_names().count("prompt_id")) { impl_->has_prompt = true; break; }
+    }
+
     impl_->token_et = impl_->decoder.input("token").get_element_type();
 
     // --- Vocab (id -> piece). Flat {"0":"piece", ...} format. ---
@@ -309,7 +323,8 @@ TranscriptionResult OpenVINONemotron::transcribe(const std::vector<float>& pcm) 
   const size_t pre_cache = static_cast<size_t>(I.pre_encode_cache);
   const size_t chunk_samples = I.chunk_samples();
 
-  const int prompt_id = resolve_prompt_id(I.config.language);
+  // prompt_id only applies to the multilingual (prompt-conditioned) encoder.
+  const int prompt_id = I.has_prompt ? resolve_prompt_id(I.config.language) : 0;
 
   // Persistent encoder caches (carried across chunks).
   ov::Tensor cache_channel(ov::element::f32, I.cache_channel_shape);
@@ -332,7 +347,7 @@ TranscriptionResult OpenVINONemotron::transcribe(const std::vector<float>& pcm) 
   MelBuf mel_cache;  // last pre_encode_cache frames of previous chunk's mel
   std::vector<float> mel_scratch;  // per-chunk featurizer output [bins * t_mel]
 
-  const ov::Tensor prompt_tensor = make_i32(prompt_id);
+  const ov::Tensor prompt_tensor = make_i32(prompt_id);  // unused when !has_prompt
 
   // Hot-path tensors whose shapes/values are fixed for the whole call — allocate
   // once and reuse across chunks and the inner RNNT loop instead of re-allocating
@@ -405,7 +420,7 @@ TranscriptionResult OpenVINONemotron::transcribe(const std::vector<float>& pcm) 
     I.encoder_req.set_tensor("cache_channel", cache_channel);
     I.encoder_req.set_tensor("cache_time", cache_time);
     I.encoder_req.set_tensor("cache_len", cache_len);
-    I.encoder_req.set_tensor("prompt_id", prompt_tensor);
+    if (I.has_prompt) I.encoder_req.set_tensor("prompt_id", prompt_tensor);
     I.encoder_req.infer();
 
     const ov::Tensor encoded = I.encoder_req.get_tensor("encoded");  // [1, D, T_enc]
