@@ -243,7 +243,7 @@ typedef struct {
 typedef struct {
     char* text;                // full transcript (lang-tag tokens stripped); free with eddy_nemotron_free_result
     char* detected_language;   // first <xx-XX> tag emitted, or "" ; freed with the result
-    int* token_ids;            // raw emitted token ids (pre-strip); freed with the result
+    int* token_ids;            // raw emitted token ids (pre-strip); must be freed with eddy_nemotron_free_result
     size_t num_tokens;
     int prompt_id_used;        // integer prompt id selected for conditioning
     double latency_ms;

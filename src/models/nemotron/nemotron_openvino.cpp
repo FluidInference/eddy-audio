@@ -18,7 +18,6 @@
 #include <string_view>
 
 #include <algorithm>
-#include <cassert>
 #include <cctype>
 #include <chrono>
 #include <cstring>
@@ -128,9 +127,10 @@ void OpenVINONemotron::warmup() { ensure_compiled(); }
 
 int OpenVINONemotron::resolve_prompt_id(const std::string& language) const {
   // prompt_dictionary is populated by ensure_compiled(); make this safe to call
-  // standalone (before transcribe()/warmup()). ensure_compiled() is std::call_once
-  // guarded, so this is a cheap no-op once compiled.
-  const_cast<OpenVINONemotron*>(this)->ensure_compiled();
+  // standalone (before transcribe()/warmup()). ensure_compiled() is const (it only
+  // mutates *impl_, reachable through the unique_ptr in a const method) and
+  // std::call_once guarded, so this is a cheap no-op once compiled.
+  ensure_compiled();
   const auto& dict = impl_->prompt_dictionary;
   auto it = dict.find(language);
   if (it != dict.end()) {
@@ -149,7 +149,7 @@ int OpenVINONemotron::resolve_prompt_id(const std::string& language) const {
   return impl_->default_prompt_id;
 }
 
-void OpenVINONemotron::ensure_compiled() {
+void OpenVINONemotron::ensure_compiled() const {
   std::call_once(impl_->compile_once, [this]() {
     auto& core = impl_->backend->core();
     const std::string device = impl_->config.device.empty() ? "AUTO" : impl_->config.device;
@@ -266,19 +266,34 @@ TranscriptionResult OpenVINONemotron::transcribe(const std::vector<float>& pcm) 
 
   const ov::Tensor prompt_tensor = make_i32(prompt_id);
 
+  // Hot-path tensors whose shapes/values are fixed for the whole call — allocate
+  // once and reuse across chunks and the inner RNNT loop instead of re-allocating
+  // every iteration (the inner `token`/`token_length` allocs dominate otherwise).
+  ov::Tensor audio(ov::element::f32, ov::Shape{1, chunk_samples});
+  ov::Tensor mel_in(ov::element::f32, ov::Shape{1, bins, total});
+  ov::Tensor token(I.token_et, ov::Shape{1, 1});
+  const ov::Tensor token_length = make_i32(1);
+  const ov::Tensor mel_length = make_i32(static_cast<int>(total));
+  // audio_length is intentionally the FULL padded chunk size on every chunk,
+  // including the final short chunk. This mirrors the WER-validated Python
+  // reference (transcribe_ov.py: the chunk is np.pad'd to chunk_samples and
+  // chunk.shape[1] == chunk_samples is passed). The preprocessor IR does not gate
+  // mel output on this value, so passing the real (end-off) count would diverge
+  // from the validated path without changing output.
+  const ov::Tensor audio_length = make_i32(static_cast<int>(chunk_samples));
+
   size_t off = 0;
   while (off < pcm.size()) {
     const size_t end = std::min(off + chunk_samples, pcm.size());
 
-    // Raw audio chunk, padded to chunk_samples.
-    ov::Tensor audio(ov::element::f32, ov::Shape{1, chunk_samples});
+    // Raw audio chunk, padded to chunk_samples (reusing the hoisted tensor).
     float* adst = audio.data<float>();
     std::memset(adst, 0, audio.get_byte_size());
     std::copy(pcm.begin() + static_cast<long>(off), pcm.begin() + static_cast<long>(end), adst);
 
     // Preprocessor: audio -> mel [1, bins, T_mel]
     I.preproc_req.set_tensor("audio", audio);
-    I.preproc_req.set_tensor("audio_length", make_i32(static_cast<int>(chunk_samples)));
+    I.preproc_req.set_tensor("audio_length", audio_length);
     I.preproc_req.infer();
     const ov::Tensor mel_out = I.preproc_req.get_tensor("mel");
     const ov::Shape mel_shape = mel_out.get_shape();  // [1, bins, T_mel]
@@ -286,8 +301,8 @@ TranscriptionResult OpenVINONemotron::transcribe(const std::vector<float>& pcm) 
     const float* mel_src = mel_out.data<float>();
 
     // Build encoder mel input [1, bins, total]: prepend cache (or zero
-    // pre_encode_cache on first chunk), then pad/trim to total.
-    ov::Tensor mel_in(ov::element::f32, ov::Shape{1, bins, total});
+    // pre_encode_cache on first chunk), then pad/trim to total. (reusing the
+    // hoisted tensor; fully overwritten via memset + fills below.)
     float* mdst = mel_in.data<float>();
     std::memset(mdst, 0, mel_in.get_byte_size());
 
@@ -321,7 +336,7 @@ TranscriptionResult OpenVINONemotron::transcribe(const std::vector<float>& pcm) 
 
     // Encoder: mel + caches + prompt_id -> encoded + caches
     I.encoder_req.set_tensor("mel", mel_in);
-    I.encoder_req.set_tensor("mel_length", make_i32(static_cast<int>(total)));
+    I.encoder_req.set_tensor("mel_length", mel_length);
     I.encoder_req.set_tensor("cache_channel", cache_channel);
     I.encoder_req.set_tensor("cache_time", cache_time);
     I.encoder_req.set_tensor("cache_len", cache_len);
@@ -336,10 +351,15 @@ TranscriptionResult OpenVINONemotron::transcribe(const std::vector<float>& pcm) 
       const ov::Tensor cl = I.encoder_req.get_tensor("cache_len_out");
       // Cache-aware streaming: the *_out caches are the same fixed shape as the
       // input caches (the ring buffer is re-filled in place), so we copy back
-      // into the pre-allocated input tensors. Assert the byte sizes agree so a
-      // mismatched IR export trips here instead of silently over-/under-reading.
-      assert(cc.get_byte_size() == cache_channel.get_byte_size());
-      assert(ctt.get_byte_size() == cache_time.get_byte_size());
+      // into the pre-allocated input tensors. Check the byte sizes agree so a
+      // mismatched IR export throws here instead of silently over-/under-reading.
+      // Runtime check (not assert): Release builds define NDEBUG.
+      if (cc.get_byte_size() != cache_channel.get_byte_size() ||
+          ctt.get_byte_size() != cache_time.get_byte_size()) {
+        throw std::runtime_error(
+            "Nemotron encoder cache_*_out byte size differs from the pre-allocated "
+            "input cache; the model IR does not match metadata.json cache shapes.");
+      }
       std::memcpy(cache_channel.data<float>(), cc.data<float>(), cache_channel.get_byte_size());
       std::memcpy(cache_time.data<float>(), ctt.data<float>(), cache_time.get_byte_size());
       cache_len.data<int32_t>()[0] = cl.data<int32_t>()[0];
@@ -359,15 +379,15 @@ TranscriptionResult OpenVINONemotron::transcribe(const std::vector<float>& pcm) 
       }
 
       for (size_t sym = 0; sym < I.config.max_symbols_per_frame; ++sym) {
-        // Decoder
-        ov::Tensor token(I.token_et, ov::Shape{1, 1});
+        // Decoder (token/token_length tensors hoisted above the loops; just
+        // overwrite the scalar token value each iteration).
         if (I.token_et == ov::element::i64) {
           token.data<int64_t>()[0] = last_token;
         } else {
           token.data<int32_t>()[0] = last_token;
         }
         I.decoder_req.set_tensor("token", token);
-        I.decoder_req.set_tensor("token_length", make_i32(1));
+        I.decoder_req.set_tensor("token_length", token_length);
         I.decoder_req.set_tensor("h_in", h);
         I.decoder_req.set_tensor("c_in", c);
         I.decoder_req.infer();
@@ -395,9 +415,19 @@ TranscriptionResult OpenVINONemotron::transcribe(const std::vector<float>& pcm) 
         }
         all_tokens.push_back(best);
         last_token = best;
-        // Advance LSTM state on emission.
-        std::memcpy(h.data<float>(), I.decoder_req.get_tensor("h_out").data<float>(), h.get_byte_size());
-        std::memcpy(c.data<float>(), I.decoder_req.get_tensor("c_out").data<float>(), c.get_byte_size());
+        // Advance LSTM state on emission. h_out/c_out are the same fixed shape as
+        // h_in/c_in by construction; guard so a mismatched decoder IR throws
+        // instead of corrupting the fixed-size state tensors.
+        const ov::Tensor h_out = I.decoder_req.get_tensor("h_out");
+        const ov::Tensor c_out = I.decoder_req.get_tensor("c_out");
+        if (h_out.get_byte_size() != h.get_byte_size() ||
+            c_out.get_byte_size() != c.get_byte_size()) {
+          throw std::runtime_error(
+              "Nemotron decoder h_out/c_out byte size differs from the LSTM state "
+              "tensors; the decoder IR does not match the expected layer/hidden dims.");
+        }
+        std::memcpy(h.data<float>(), h_out.data<float>(), h.get_byte_size());
+        std::memcpy(c.data<float>(), c_out.data<float>(), c.get_byte_size());
       }
     }
 

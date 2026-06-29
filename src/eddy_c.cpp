@@ -535,13 +535,10 @@ EDDY_API EddyNemotronModel eddy_nemotron_create(EddyNemotronConfig config, char*
         const std::string language = config.language ? config.language : "auto";
 
         // Resolve model directory: explicit dir, else (NULL/"cache") the Eddy cache.
-        std::filesystem::path model_dir;
-        if (config.model_dir && std::string(config.model_dir).size() > 0 &&
-            std::string(config.model_dir) != "cache") {
-            model_dir = config.model_dir;
-        } else {
-            model_dir = eddy::get_model_assets_dir(kNemotronModelName);
-        }
+        const std::string md = config.model_dir ? config.model_dir : "";
+        std::filesystem::path model_dir =
+            (!md.empty() && md != "cache") ? std::filesystem::path(md)
+                                           : eddy::get_model_assets_dir(kNemotronModelName);
 
         auto backend = std::make_shared<eddy::OpenVINOBackend>(
             eddy::OpenVINOOptions{ .device = device,
@@ -603,14 +600,19 @@ EDDY_API EddyError eddy_nemotron_infer_buffer(EddyNemotronModel handle, const fl
         if (err) *err = copy_string("[Eddy Error] Nemotron expects 16kHz mono audio");
         return EDDY_ERROR_INVALID_ARGUMENT;
     }
+    // Zero-init so a throw mid-fill (e.g. copy_string OOM after text is set) is
+    // cleaned up by eddy_nemotron_free_result in the catch instead of leaking.
+    *out = EddyNemotronResult{};
     try {
         auto* h = static_cast<CNemotron*>(handle);
         std::vector<float> samples(pcm, pcm + length);
         return nemotron_fill_result(h->model->transcribe(samples), out);
     } catch (const std::exception& e) {
+        eddy_nemotron_free_result(out);
         if (err) *err = capture_exception(e);
         return EDDY_ERROR_INFERENCE_FAILED;
     } catch (...) {
+        eddy_nemotron_free_result(out);
         if (err) *err = copy_string("[Eddy Error] Unknown exception during nemotron inference");
         return EDDY_ERROR_UNKNOWN;
     }
@@ -622,12 +624,19 @@ EDDY_API EddyError eddy_nemotron_infer_file(EddyNemotronModel handle, const char
         if (err) *err = copy_string("[Eddy Error] Invalid argument: null pointer");
         return EDDY_ERROR_INVALID_ARGUMENT;
     }
+    // Only a genuinely missing file is FILE_NOT_FOUND; read_wav also throws for
+    // format/channel/sample-rate/decode errors, which are not filesystem issues.
+    std::error_code ec;
+    if (!std::filesystem::exists(wav_path, ec)) {
+        if (err) *err = copy_string("[Eddy Error] WAV file not found: " + std::string(wav_path));
+        return EDDY_ERROR_FILE_NOT_FOUND;
+    }
     try {
         auto pcm = eddy::audio::read_wav(wav_path);
         return eddy_nemotron_infer_buffer(handle, pcm.data(), pcm.size(), 16000, out, err);
     } catch (const std::exception& e) {
         if (err) *err = capture_exception(e);
-        return EDDY_ERROR_FILE_NOT_FOUND;
+        return EDDY_ERROR_INFERENCE_FAILED;
     } catch (...) {
         if (err) *err = copy_string("[Eddy Error] Unknown exception in nemotron infer_file");
         return EDDY_ERROR_UNKNOWN;

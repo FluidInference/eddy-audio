@@ -34,7 +34,9 @@ struct ModelPaths {
 };
 
 struct Config {
-  std::string device = "AUTO";  // OpenVINO device for encoder/decoder/joint (preprocessor always CPU)
+  // CPU is the default (safe, tested path; matches the eddy_c C API default and
+  // the CLI). Set "AUTO"/"NPU"/"GPU" to target other OpenVINO devices.
+  std::string device = "CPU";  // OpenVINO device for encoder/decoder/joint (preprocessor always CPU)
   /// Language for prompt conditioning. Accepts dictionary keys ("en-US"),
   /// 2-letter codes ("en" -> first "en-*"), or "auto" (model self-detects).
   std::string language = "auto";
@@ -72,7 +74,10 @@ public:
   struct Impl;
 
 private:
-  void ensure_compiled();
+  // const: only mutates *impl_ (reachable through the unique_ptr in a const
+  // method) and is std::call_once-guarded, so resolve_prompt_id() (const) can
+  // lazily compile without a const_cast.
+  void ensure_compiled() const;
   std::unique_ptr<Impl> impl_;
 };
 

@@ -19,8 +19,10 @@ void print_usage(const char* prog) {
   std::cout << "Options:\n";
   std::cout << "  --device <device>   OpenVINO device (default: CPU). CPU, AUTO, NPU\n";
   std::cout << "  --lang <code>       Language: en-US, zh-CN, ... or auto (default: auto)\n";
+  std::cout << "  --model <name>      Model variant: nemotron-streaming (FP16, default) or\n";
+  std::cout << "                      nemotron-streaming-int8. Selects the cache dir.\n";
   std::cout << "  --model-dir <dir>   Directory with nemotron_*.xml/bin + metadata.json\n";
-  std::cout << "                      (default: per-user model cache for 'nemotron-streaming')\n";
+  std::cout << "                      (overrides --model; default: cache for the --model variant)\n";
   std::cout << "  --help              Show this help\n";
 }
 
@@ -31,18 +33,35 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
-  std::string audio_file, device = "CPU", lang = "auto", model_dir_arg;
+  std::string audio_file, device = "CPU", lang = "auto", model_dir_arg,
+              model_name = "nemotron-streaming";
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
+    // A flag that needs a value but is the last arg must error, not fall through
+    // to the positional branch (which would swallow the flag as the audio path).
+    auto take_value = [&](const char* flag, std::string& dst) -> bool {
+      if (i + 1 >= argc) {
+        std::cerr << "Error: " << flag << " requires an argument\n";
+        return false;
+      }
+      dst = argv[++i];
+      return true;
+    };
     if (a == "--help" || a == "-h") {
       print_usage(argv[0]);
       return 0;
-    } else if (a == "--device" && i + 1 < argc) {
-      device = argv[++i];
-    } else if (a == "--lang" && i + 1 < argc) {
-      lang = argv[++i];
-    } else if (a == "--model-dir" && i + 1 < argc) {
-      model_dir_arg = argv[++i];
+    } else if (a == "--device") {
+      if (!take_value("--device", device)) return 1;
+    } else if (a == "--lang") {
+      if (!take_value("--lang", lang)) return 1;
+    } else if (a == "--model") {
+      if (!take_value("--model", model_name)) return 1;
+    } else if (a == "--model-dir") {
+      if (!take_value("--model-dir", model_dir_arg)) return 1;
+    } else if (!a.empty() && a[0] == '-') {
+      std::cerr << "Error: unknown option " << a << "\n\n";
+      print_usage(argv[0]);
+      return 1;
     } else {
       audio_file = a;
     }
@@ -62,13 +81,14 @@ int main(int argc, char* argv[]) {
               << audio_seconds << "s)\n";
 
     std::filesystem::path model_dir =
-        model_dir_arg.empty() ? eddy::get_model_assets_dir("nemotron-streaming")
+        model_dir_arg.empty() ? eddy::get_model_assets_dir(model_name)
                               : std::filesystem::path(model_dir_arg);
+    std::cout << "Model:  " << model_name << "\n";
     std::cout << "Models: " << model_dir.string() << "\n";
 
     eddy::OpenVINOOptions ov_opts;
     ov_opts.device = device;
-    ov_opts.cache_dir = eddy::get_model_dir("nemotron-streaming").string();
+    ov_opts.cache_dir = eddy::get_model_dir(model_name).string();
     auto backend = std::make_shared<eddy::OpenVINOBackend>(ov_opts);
 
     eddy::nemotron::ModelPaths paths{
