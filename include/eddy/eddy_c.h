@@ -226,6 +226,56 @@ EDDY_API EddyError eddy_parakeet_infer_buffer(EddyParakeetModel model, const flo
 EDDY_API char* eddy_parakeet_decode_tokens(EddyParakeetModel model, const int* token_ids, size_t count);
 EDDY_API void eddy_parakeet_free_result(EddyParakeetResult* result);
 
+// -----------------------------
+// Nemotron streaming (OpenVINO) C API
+// -----------------------------
+
+// Opaque handle for a Nemotron streaming model.
+typedef void* EddyNemotronModel;
+
+typedef struct {
+    const char* device;     // "CPU", "NPU", or "AUTO" (default "CPU")
+    const char* model_dir;  // Dir with nemotron_*.xml/bin + metadata.json.
+                            // NULL or "cache" => Eddy cache for "nemotron-streaming".
+    const char* language;   // "en-US", "zh-CN", ..., or "auto" (default "auto")
+} EddyNemotronConfig;
+
+typedef struct {
+    char* text;                // full transcript (lang-tag tokens stripped); free with eddy_nemotron_free_result
+    char* detected_language;   // first <xx-XX> tag emitted, or "" ; freed with the result
+    int* token_ids;            // raw emitted token ids (pre-strip); must be freed with eddy_nemotron_free_result
+    size_t num_tokens;
+    int prompt_id_used;        // integer prompt id selected for conditioning
+    double latency_ms;
+} EddyNemotronResult;
+
+/**
+ * @brief Create a Nemotron streaming model.
+ * @param config Device / model_dir / language. Language conditions decoding and
+ *               is fixed at creation; recreate the handle to change it.
+ * @param error_message Out param for error (can be NULL). Free with eddy_free_string.
+ * @return Model handle or NULL on failure.
+ */
+EDDY_API EddyNemotronModel eddy_nemotron_create(EddyNemotronConfig config, char** error_message);
+
+/** @brief Destroy a Nemotron model handle. */
+EDDY_API void eddy_nemotron_destroy(EddyNemotronModel model);
+
+/**
+ * @brief Transcribe a 16 kHz mono WAV file.
+ * @param result Out param; free with eddy_nemotron_free_result.
+ */
+EDDY_API EddyError eddy_nemotron_infer_file(EddyNemotronModel model, const char* wav_path, EddyNemotronResult* result, char** error_message);
+
+/**
+ * @brief Transcribe a raw float32 PCM buffer (16 kHz mono, normalized [-1, 1]).
+ * @param result Out param; free with eddy_nemotron_free_result.
+ */
+EDDY_API EddyError eddy_nemotron_infer_buffer(EddyNemotronModel model, const float* pcm, size_t length, int sample_rate, EddyNemotronResult* result, char** error_message);
+
+/** @brief Free an EddyNemotronResult (text, detected_language, token_ids). */
+EDDY_API void eddy_nemotron_free_result(EddyNemotronResult* result);
+
 // Utility
 
 /**

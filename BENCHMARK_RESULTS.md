@@ -97,6 +97,36 @@ Comprehensive benchmark results for eddy ASR on LibriSpeech test-clean and FLEUR
 
 ---
 
+## Nemotron Streaming Multilingual 0.6B (FLEURS)
+
+**Model**: `nemotron-streaming-int8` (weight-only INT8 encoder, FP16 decoder/joint)
+**Device**: Intel NPU · **Software**: OpenVINO 2025.0 · **Decoding**: greedy, forced language
+**Preprocessor**: native C++ log-mel featurizer (replaces the dynamic-shape OV preprocessor)
+**Scoring**: FluidAudio methodology — WER for spaced languages, character-level CER for CJK
+(`ja`/`zh`), Whisper-style punctuation/symbol stripping
+
+| Language | Metric | eddy NPU (int8) | OpenVINO FP32 ref | FluidAudio CoreML ref | RTFx | Samples |
+|----------|--------|----------------:|------------------:|----------------------:|-----:|--------:|
+| English (US) | WER | 12.48 | 11.78 | 12.09 | 22.3× | 350 |
+| Spanish (LatAm) | WER | 7.03 | 6.99 | 9.01 | 22.5× | 350 |
+| French (France) | WER | 13.35 | 12.92 | 15.18 | 21.7× | 350 |
+| Chinese (Mandarin) | CER | 20.18 | 21.05 | 24.54 | 23.7× | 945 |
+| Japanese | CER | 15.46 | 15.12 | 16.86 | 23.3× | 650 |
+
+**Audio-weighted RTFx**: ~22–24× on Intel NPU (≈2× the CPU figure of ~11×).
+
+**Notes**:
+- INT8-on-NPU accuracy matches the OpenVINO FP32 reference within noise and beats the
+  FluidAudio CoreML reference on es/fr/zh/ja.
+- **NPU enablement**: the OpenVINO NPU plugin miscompiles `BitwiseNot` on a boolean
+  (integer complement → mask all-true → encoder collapses to ~0 → empty transcripts).
+  eddy rewrites `BitwiseNot → LogicalNot` in the encoder IR before compiling (no-op on
+  CPU/GPU); without it the NPU produces empty output for this model.
+- Unlike Parakeet (overlapping-chunk + 2D dedup), Nemotron is cache-aware streaming RNNT
+  with per-chunk `prompt_id` language conditioning.
+
+---
+
 ## Performance Notes
 
 ### Best Performing Languages (WER < 10%)

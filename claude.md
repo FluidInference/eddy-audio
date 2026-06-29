@@ -28,12 +28,17 @@ Match FluidAudio's Parakeet v2 (Swift/CoreML) implementation in C++/OpenVINO:
 
 ## Architecture
 
-**Batch Chunking** (current focus):
+Two first-class ASR paths are supported:
+
+**Batch (Parakeet)** — `eddy::parakeet`, stateless overlapping-chunk encoder:
 - 10s chunks with 3s overlap
 - 2D search deduplication at boundaries
 - LSTM state continuity across chunks
 
-**NOT building streaming yet** - focus is on batch processing of complete audio files.
+**Streaming (Nemotron)** — `eddy::nemotron`, cache-aware streaming FastConformer-RNNT:
+- Carries `cache_channel`/`cache_time`/`cache_len` across chunks (`att_context=[56,0]`)
+- Integer `prompt_id` per-chunk language conditioning (40+ languages)
+- Plain RNNT greedy decode (no TDT duration bins)
 
 ## Testing
 

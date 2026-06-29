@@ -53,7 +53,9 @@ int main(int argc, char** argv) {
     auto it = MODEL_MAP.find(model_name);
     if (it == MODEL_MAP.end()) {
         std::cerr << "ERROR: Unknown model: " << model_name << "\n";
-        std::cerr << "Available models: parakeet-v2\n";
+        std::cerr << "Available models:";
+        for (const auto& [k, _] : MODEL_MAP) std::cerr << " " << k;
+        std::cerr << "\n";
         return 1;
     }
 
@@ -85,7 +87,7 @@ int main(int argc, char** argv) {
 
     // Download models using library function
     std::string error_msg;
-    bool success = eddy::parakeet::download_models(
+    bool success = eddy::model_utils::download_models(
         config,
         fs::path(target_dir),
         &error_msg,

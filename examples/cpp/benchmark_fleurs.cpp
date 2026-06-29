@@ -507,7 +507,7 @@ int main(int argc, char* argv[]) {
         // Load Parakeet v3 models
         auto cache_model_dir = eddy::get_model_assets_dir("parakeet-v3");
         std::string fetch_err;
-        if (!eddy::parakeet::check_models_available(cache_model_dir, &fetch_err)) {
+        if (!eddy::model_utils::check_models_available(cache_model_dir, &fetch_err)) {
             if (!fetch_err.empty()) std::cout << "[INFO] " << fetch_err << "\n";
         }
 
