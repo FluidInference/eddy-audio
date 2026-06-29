@@ -12,6 +12,7 @@
 #include "eddy/core/model_configs.hpp"
 #include "eddy/models/parakeet-v2/parakeet.hpp"
 #include "eddy/models/parakeet-v2/parakeet_openvino.hpp"
+#include "eddy/models/nemotron/nemotron.hpp"
 #include "eddy/utils/ensure_models.hpp"
 #include "eddy/utils/audio_utils.hpp"
 
@@ -65,7 +66,7 @@ EddyError eddy_download_parakeet_models(
         const eddy::ModelConfig& config = it->second;
 
         // Create progress callback wrapper
-        eddy::parakeet::DownloadProgressCallback cpp_callback = nullptr;
+        eddy::model_utils::DownloadProgressCallback cpp_callback = nullptr;
         if (progress_callback) {
             cpp_callback = [progress_callback, user_data](const std::string& filename, int current, int total) {
                 progress_callback(filename.c_str(), current, total, user_data);
@@ -74,7 +75,7 @@ EddyError eddy_download_parakeet_models(
 
         // Download models
         std::string last_error;
-        bool success = eddy::parakeet::download_models(
+        bool success = eddy::model_utils::download_models(
             config,
             std::filesystem::path(target_dir),
             &last_error,
@@ -397,7 +398,7 @@ EDDY_API EddyParakeetModel eddy_parakeet_create(EddyParakeetConfig config, char*
         }
 
         std::string err;
-        (void)eddy::parakeet::check_models_available(model_dir, &err);
+        (void)eddy::model_utils::check_models_available(model_dir, &err);
 #if defined(_WIN32)
         if (!std::filesystem::exists(model_dir)) {
             auto legacy = eddy::get_app_data_dir() / "cache" / "models" / "parakeet-v2" / "files";
@@ -508,6 +509,129 @@ EDDY_API char* eddy_parakeet_decode_tokens(EddyParakeetModel handle, const int* 
     std::vector<int> ids(token_ids, token_ids + count);
     auto txt = h->model->decode_tokens(ids);
     return copy_string(txt);
+}
+
+// -----------------------------
+// Nemotron streaming C API
+// -----------------------------
+
+static constexpr const char* kNemotronModelName = "nemotron-streaming";
+
+struct CNemotron {
+    std::unique_ptr<eddy::nemotron::OpenVINONemotron> model;
+};
+
+EDDY_API void eddy_nemotron_free_result(EddyNemotronResult* result) {
+    if (!result) return;
+    if (result->text) { delete[] result->text; result->text = nullptr; }
+    if (result->detected_language) { delete[] result->detected_language; result->detected_language = nullptr; }
+    if (result->token_ids) { delete[] result->token_ids; result->token_ids = nullptr; }
+    result->num_tokens = 0;
+}
+
+EDDY_API EddyNemotronModel eddy_nemotron_create(EddyNemotronConfig config, char** error_message) {
+    try {
+        const std::string device = config.device ? config.device : "CPU";
+        const std::string language = config.language ? config.language : "auto";
+
+        // Resolve model directory: explicit dir, else (NULL/"cache") the Eddy cache.
+        std::filesystem::path model_dir;
+        if (config.model_dir && std::string(config.model_dir).size() > 0 &&
+            std::string(config.model_dir) != "cache") {
+            model_dir = config.model_dir;
+        } else {
+            model_dir = eddy::get_model_assets_dir(kNemotronModelName);
+        }
+
+        auto backend = std::make_shared<eddy::OpenVINOBackend>(
+            eddy::OpenVINOOptions{ .device = device,
+                                   .cache_dir = eddy::get_model_dir(kNemotronModelName).string() }
+        );
+
+        eddy::nemotron::ModelPaths paths{
+            .preprocessor  = (model_dir / "nemotron_preprocessor.xml").string(),
+            .encoder       = (model_dir / "nemotron_encoder.xml").string(),
+            .decoder       = (model_dir / "nemotron_decoder.xml").string(),
+            .joint         = (model_dir / "nemotron_joint.xml").string(),
+            .vocab_json    = (model_dir / "nemotron_vocab.json").string(),
+            .metadata_json = (model_dir / "metadata.json").string(),
+        };
+
+        eddy::nemotron::Config cfg;
+        cfg.device = device;
+        cfg.language = language;
+
+        auto handle = std::make_unique<CNemotron>();
+        handle->model = std::make_unique<eddy::nemotron::OpenVINONemotron>(backend, paths, cfg);
+        return static_cast<EddyNemotronModel>(handle.release());
+    } catch (const std::exception& e) {
+        if (error_message) *error_message = capture_exception(e);
+        return nullptr;
+    } catch (...) {
+        if (error_message) *error_message = copy_string("[Eddy Error] Unknown exception in nemotron create");
+        return nullptr;
+    }
+}
+
+EDDY_API void eddy_nemotron_destroy(EddyNemotronModel handle) {
+    if (!handle) return;
+    delete static_cast<CNemotron*>(handle);
+}
+
+static EddyError nemotron_fill_result(const eddy::nemotron::TranscriptionResult& res, EddyNemotronResult* out) {
+    out->text = copy_string(res.text);
+    out->detected_language = copy_string(res.detected_language);
+    out->prompt_id_used = res.prompt_id_used;
+    out->latency_ms = res.latency_ms;
+    out->num_tokens = res.token_ids.size();
+    if (out->num_tokens > 0) {
+        out->token_ids = new int[out->num_tokens];
+        for (size_t i = 0; i < out->num_tokens; ++i) out->token_ids[i] = res.token_ids[i];
+    } else {
+        out->token_ids = nullptr;
+    }
+    return EDDY_OK;
+}
+
+EDDY_API EddyError eddy_nemotron_infer_buffer(EddyNemotronModel handle, const float* pcm, size_t length,
+                                              int sample_rate, EddyNemotronResult* out, char** err) {
+    if (!handle || !pcm || !out) {
+        if (err) *err = copy_string("[Eddy Error] Invalid argument: null pointer");
+        return EDDY_ERROR_INVALID_ARGUMENT;
+    }
+    if (sample_rate != 16000) {
+        if (err) *err = copy_string("[Eddy Error] Nemotron expects 16kHz mono audio");
+        return EDDY_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        auto* h = static_cast<CNemotron*>(handle);
+        std::vector<float> samples(pcm, pcm + length);
+        return nemotron_fill_result(h->model->transcribe(samples), out);
+    } catch (const std::exception& e) {
+        if (err) *err = capture_exception(e);
+        return EDDY_ERROR_INFERENCE_FAILED;
+    } catch (...) {
+        if (err) *err = copy_string("[Eddy Error] Unknown exception during nemotron inference");
+        return EDDY_ERROR_UNKNOWN;
+    }
+}
+
+EDDY_API EddyError eddy_nemotron_infer_file(EddyNemotronModel handle, const char* wav_path,
+                                            EddyNemotronResult* out, char** err) {
+    if (!handle || !wav_path || !out) {
+        if (err) *err = copy_string("[Eddy Error] Invalid argument: null pointer");
+        return EDDY_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        auto pcm = eddy::audio::read_wav(wav_path);
+        return eddy_nemotron_infer_buffer(handle, pcm.data(), pcm.size(), 16000, out, err);
+    } catch (const std::exception& e) {
+        if (err) *err = capture_exception(e);
+        return EDDY_ERROR_FILE_NOT_FOUND;
+    } catch (...) {
+        if (err) *err = copy_string("[Eddy Error] Unknown exception in nemotron infer_file");
+        return EDDY_ERROR_UNKNOWN;
+    }
 }
 
 } // extern "C"

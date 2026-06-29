@@ -1,4 +1,5 @@
-// Centralized helper to check and download Parakeet OpenVINO model files.
+// Centralized helper to check and download OpenVINO model files.
+// Model-agnostic: operates on any eddy::ModelConfig (Parakeet, Nemotron, ...).
 
 #pragma once
 
@@ -8,7 +9,7 @@
 #include <vector>
 #include <functional>
 
-namespace eddy::parakeet {
+namespace eddy::model_utils {
 
 // Checks if all required model files exist in target_dir.
 // Returns true if all files are present, false otherwise.
@@ -39,5 +40,5 @@ using DownloadProgressCallback = std::function<void(const std::string&, int, int
     DownloadProgressCallback progress_callback = nullptr,
     bool skip_existing = true);
 
-}  // namespace eddy::parakeet
+}  // namespace eddy::model_utils
 

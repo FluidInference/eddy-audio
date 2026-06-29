@@ -87,7 +87,7 @@ int main(int argc, char** argv) {
 
     // Download models using library function
     std::string error_msg;
-    bool success = eddy::parakeet::download_models(
+    bool success = eddy::model_utils::download_models(
         config,
         fs::path(target_dir),
         &error_msg,

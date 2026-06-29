@@ -1,4 +1,4 @@
-// Centralized check and download for Parakeet model files.
+// Centralized check and download for OpenVINO model files (model-agnostic).
 
 #include "eddy/utils/ensure_models.hpp"
 
@@ -7,7 +7,7 @@
 #include <system_error>
 #include <cstdlib>
 
-namespace eddy::parakeet {
+namespace eddy::model_utils {
 
 static bool file_nonempty(const std::filesystem::path& p) {
   std::error_code ec;
@@ -168,4 +168,4 @@ bool download_models(const eddy::ModelConfig& config,
   return true;
 }
 
-}  // namespace eddy::parakeet
+}  // namespace eddy::model_utils
