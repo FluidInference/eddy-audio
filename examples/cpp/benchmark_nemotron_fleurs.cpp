@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -75,31 +76,65 @@ std::vector<std::string> utf8_chars(const std::string& s) {
     return cps;
 }
 
-// Normalize: lowercase ASCII alphanumerics, collapse other ASCII to single
-// spaces, and KEEP non-ASCII codepoints verbatim (so CJK/accented characters
-// survive for CER). UTF-8 aware, unlike the byte-wise version in
-// benchmark_fleurs.cpp which would strip all CJK.
+// Decode a 1-4 byte UTF-8 codepoint string to its Unicode scalar value.
+uint32_t cp_scalar(const std::string& cp) {
+    unsigned char c0 = static_cast<unsigned char>(cp[0]);
+    if (cp.size() == 1) return c0;
+    if (cp.size() == 2) return ((c0 & 0x1F) << 6) | (static_cast<unsigned char>(cp[1]) & 0x3F);
+    if (cp.size() == 3)
+        return ((c0 & 0x0F) << 12) | ((static_cast<unsigned char>(cp[1]) & 0x3F) << 6) |
+               (static_cast<unsigned char>(cp[2]) & 0x3F);
+    return ((c0 & 0x07) << 18) | ((static_cast<unsigned char>(cp[1]) & 0x3F) << 12) |
+           ((static_cast<unsigned char>(cp[2]) & 0x3F) << 6) | (static_cast<unsigned char>(cp[3]) & 0x3F);
+}
+
+// Approximate the Whisper/FluidAudio normalizer's "replace every Mark/Symbol/
+// Punctuation (Unicode category M/S/P) with a space" step over the codepoint
+// blocks that actually occur in FLEURS refs/hyps. Keeps letters (incl. CJK,
+// kana, hangul, accented Latin, Greek, Cyrillic) and digits.
+bool is_punct_or_symbol(uint32_t c) {
+    return (c >= 0x00A1 && c <= 0x00BF) || c == 0x00D7 || c == 0x00F7 ||  // Latin-1 punct/symbols, × ÷
+           (c >= 0x2000 && c <= 0x206F) ||   // general punctuation – — ' ' " " …
+           (c >= 0x2070 && c <= 0x20CF) ||   // super/subscripts, currency symbols
+           (c >= 0x2100 && c <= 0x2BFF) ||   // letterlike/number forms, arrows, math, misc symbols
+           (c >= 0x3000 && c <= 0x303F) ||   // CJK symbols and punctuation 。、「」（）
+           (c >= 0xFF01 && c <= 0xFF0F) ||   // fullwidth ！＂＃…／
+           (c >= 0xFF1A && c <= 0xFF20) ||   // fullwidth ：；＜＝＞？＠
+           (c >= 0xFF3B && c <= 0xFF40) ||   // fullwidth ［＼］＾＿｀
+           (c >= 0xFF5B && c <= 0xFF65);     // fullwidth ｛｜｝、。etc
+}
+
+// Normalize ~ FluidAudio's basicNormalize: lowercase ASCII, replace Unicode
+// punctuation/symbols (M/S/P) with single spaces, keep letters/digits and
+// diacritics/CJK, collapse whitespace. (Whisper's English number-word folding
+// is intentionally omitted — "similar enough" per the multilingual path.)
 std::string normalize_text(const std::string& text) {
     std::string result;
     result.reserve(text.size());
     bool last_space = false;
+    auto sep = [&]() { if (!last_space && !result.empty()) { result += ' '; last_space = true; } };
     for (const std::string& cp : utf8_chars(text)) {
         if (cp.size() == 1) {
             unsigned char c = static_cast<unsigned char>(cp[0]);
-            if (std::isalnum(c)) {
-                result += static_cast<char>(std::tolower(c));
-                last_space = false;
-            } else if (!last_space && !result.empty()) {
-                result += ' ';
-                last_space = true;
-            }
+            if (std::isalnum(c)) { result += static_cast<char>(std::tolower(c)); last_space = false; }
+            else sep();
+        } else if (is_punct_or_symbol(cp_scalar(cp))) {
+            sep();
         } else {
-            result += cp;  // non-ASCII (CJK etc.) kept as-is
+            result += cp;  // letter / CJK / diacritic — keep
             last_space = false;
         }
     }
     if (!result.empty() && result.back() == ' ') result.pop_back();
     return result;
+}
+
+// CJK / no-space scripts: word-level WER over whitespace tokens is meaningless,
+// so FluidAudio routes these through character-level scoring (matches Whisper /
+// ESPnet). FLEURS code prefixes.
+bool is_cjk_lang(const std::string& code) {
+    auto p = [&](const char* s) { return code.rfind(s, 0) == 0; };
+    return p("ja") || p("ko") || p("zh") || p("cmn") || p("yue") || p("th") || p("lo");
 }
 
 int levenshtein(const std::vector<std::string>& a, const std::vector<std::string>& b) {
@@ -266,6 +301,7 @@ int main(int argc, char* argv[]) {
         LangResult lr;
         lr.lang = lang;
         lr.name = LANG_NAMES.count(lang) ? LANG_NAMES.at(lang) : lang;
+        const bool cjk = is_cjk_lang(lang);
         double sum_wer = 0, sum_cer = 0;
 
         for (const auto& s : samples) {
@@ -278,8 +314,10 @@ int main(int argc, char* argv[]) {
                 double proc_sec = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count() / 1000.0;
 
                 if (!s.transcription.empty()) {
-                    double w = wer(s.transcription, res.text);
+                    // CJK: character-level rate reported in both WER and CER
+                    // (FluidAudio convention — whitespace WER is meaningless).
                     double c = cer(s.transcription, res.text);
+                    double w = cjk ? c : wer(s.transcription, res.text);
                     sum_wer += w; sum_cer += c;
                     if (debug) {
                         std::cout << "  [" << s.id << "] WER=" << std::fixed << std::setprecision(1) << (w * 100) << "%\n"
