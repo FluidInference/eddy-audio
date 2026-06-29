@@ -18,8 +18,9 @@
 #include <string_view>
 
 #include <algorithm>
+#include <cassert>
+#include <cctype>
 #include <chrono>
-#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <map>
@@ -126,6 +127,10 @@ OpenVINONemotron::~OpenVINONemotron() = default;
 void OpenVINONemotron::warmup() { ensure_compiled(); }
 
 int OpenVINONemotron::resolve_prompt_id(const std::string& language) const {
+  // prompt_dictionary is populated by ensure_compiled(); make this safe to call
+  // standalone (before transcribe()/warmup()). ensure_compiled() is std::call_once
+  // guarded, so this is a cheap no-op once compiled.
+  const_cast<OpenVINONemotron*>(this)->ensure_compiled();
   const auto& dict = impl_->prompt_dictionary;
   auto it = dict.find(language);
   if (it != dict.end()) {
@@ -329,6 +334,12 @@ TranscriptionResult OpenVINONemotron::transcribe(const std::vector<float>& pcm) 
       const ov::Tensor cc = I.encoder_req.get_tensor("cache_channel_out");
       const ov::Tensor ctt = I.encoder_req.get_tensor("cache_time_out");
       const ov::Tensor cl = I.encoder_req.get_tensor("cache_len_out");
+      // Cache-aware streaming: the *_out caches are the same fixed shape as the
+      // input caches (the ring buffer is re-filled in place), so we copy back
+      // into the pre-allocated input tensors. Assert the byte sizes agree so a
+      // mismatched IR export trips here instead of silently over-/under-reading.
+      assert(cc.get_byte_size() == cache_channel.get_byte_size());
+      assert(ctt.get_byte_size() == cache_time.get_byte_size());
       std::memcpy(cache_channel.data<float>(), cc.data<float>(), cache_channel.get_byte_size());
       std::memcpy(cache_time.data<float>(), ctt.data<float>(), cache_time.get_byte_size());
       cache_len.data<int32_t>()[0] = cl.data<int32_t>()[0];
@@ -404,6 +415,9 @@ TranscriptionResult OpenVINONemotron::transcribe(const std::vector<float>& pcm) 
   result.token_ids = all_tokens;
   std::string body;
   for (int tok : all_tokens) {
+    // blank intentionally sits at index vocab_size (== blank_idx), so the
+    // explicit blank check is redundant with `tok >= vocab_size`; kept for
+    // clarity since the two are configured independently from metadata.json.
     if (tok == I.blank_idx || tok >= I.vocab_size) continue;
     if (I.lang_tag_token_ids.count(tok)) {
       if (result.detected_language.empty()) {

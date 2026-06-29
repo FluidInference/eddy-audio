@@ -2,6 +2,7 @@
 
 #include "eddy/utils/ensure_models.hpp"
 
+#include <cctype>
 #include <sstream>
 #include <system_error>
 #include <cstdlib>
@@ -15,9 +16,31 @@ static bool file_nonempty(const std::filesystem::path& p) {
          std::filesystem::file_size(p, ec) > 0;
 }
 
+// The download shells out via std::system, so any interpolated component must
+// be free of characters that could break out of the double-quoted argument.
+// Today every field is a compile-time constant, but ModelConfig is caller-
+// supplied, so reject anything outside a conservative path/URL charset rather
+// than risk command injection.
+static bool is_shell_safe(const std::string& s) {
+  for (const unsigned char c : s) {
+    const bool ok = std::isalnum(c) || c == '.' || c == '_' || c == '-' ||
+                    c == '/' || c == ':' || c == '~';
+    if (!ok) return false;
+  }
+  return true;
+}
+
 static bool download_single_file(const std::string& url,
                                   const std::filesystem::path& output_path,
                                   std::string* error_msg = nullptr) {
+  // Refuse to build a shell command from unsafe components.
+  if (!is_shell_safe(url) || !is_shell_safe(output_path.string())) {
+    if (error_msg) {
+      *error_msg = "Refusing to download: unsafe characters in URL or path: " + url;
+    }
+    return false;
+  }
+
   // Create parent directory
   std::error_code ec;
   std::filesystem::create_directories(output_path.parent_path(), ec);

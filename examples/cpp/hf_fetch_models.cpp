@@ -53,7 +53,9 @@ int main(int argc, char** argv) {
     auto it = MODEL_MAP.find(model_name);
     if (it == MODEL_MAP.end()) {
         std::cerr << "ERROR: Unknown model: " << model_name << "\n";
-        std::cerr << "Available models: parakeet-v2\n";
+        std::cerr << "Available models:";
+        for (const auto& [k, _] : MODEL_MAP) std::cerr << " " << k;
+        std::cerr << "\n";
         return 1;
     }
 
