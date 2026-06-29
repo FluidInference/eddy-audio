@@ -1,7 +1,9 @@
 // Copyright (C) 2025 Eddy SDK
 // SPDX-License-Identifier: Apache-2.0
 //
-// CLI for the NVIDIA Nemotron-3.5-ASR-Streaming-Multilingual 0.6B backend.
+// CLI for the NVIDIA Nemotron cache-aware streaming ASR backend: the
+// 3.5-ASR-Streaming-Multilingual 0.6B model and the English speech-streaming
+// 0.6B model (selected via --model).
 
 #include "eddy/backends/openvino_backend.hpp"
 #include "eddy/core/app_dir.hpp"
@@ -18,9 +20,12 @@ void print_usage(const char* prog) {
   std::cout << "Usage: " << prog << " <audio.wav> [options]\n\n";
   std::cout << "Options:\n";
   std::cout << "  --device <device>   OpenVINO device (default: CPU). CPU, AUTO, NPU\n";
-  std::cout << "  --lang <code>       Language: en-US, zh-CN, ... or auto (default: auto)\n";
-  std::cout << "  --model <name>      Model variant: nemotron-streaming (FP16, default) or\n";
-  std::cout << "                      nemotron-streaming-int8. Selects the cache dir.\n";
+  std::cout << "  --lang <code>       Language: en-US, zh-CN, ... or auto (default: auto).\n";
+  std::cout << "                      Ignored by the English speech-streaming model.\n";
+  std::cout << "  --model <name>      Model variant (selects the cache dir):\n";
+  std::cout << "                        nemotron-streaming[-int8]         multilingual (40+ langs)\n";
+  std::cout << "                        nemotron-speech-streaming[-int8]  English, no language prompt\n";
+  std::cout << "                      Default: nemotron-streaming (FP16).\n";
   std::cout << "  --model-dir <dir>   Directory with nemotron_*.xml/bin + metadata.json\n";
   std::cout << "                      (overrides --model; default: cache for the --model variant)\n";
   std::cout << "  --help              Show this help\n";
@@ -72,7 +77,7 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
-  std::cout << "=== Nemotron 3.5 ASR Streaming CLI ===\n\n";
+  std::cout << "=== Nemotron ASR Streaming CLI ===\n\n";
 
   try {
     auto pcm = eddy::audio::read_wav(audio_file);

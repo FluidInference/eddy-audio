@@ -1,12 +1,14 @@
 // Copyright (C) 2025 Eddy SDK
 // SPDX-License-Identifier: Apache-2.0
 //
-// Cache-aware streaming inference for NVIDIA Nemotron-3.5-ASR-Streaming
-// Multilingual 0.6B. Port of the validated Python reference
-// (nemotron-ov-export/transcribe_ov.py), which mirrors mobius's CoreML
-// streaming loop: chunk raw audio -> preprocessor -> cache-aware encoder
-// (+ prompt_id) -> greedy RNNT decode, carrying encoder caches and LSTM
-// state across chunks.
+// Cache-aware streaming inference for NVIDIA Nemotron FastConformer-RNNT ASR.
+// Serves both the 3.5-ASR-Streaming-Multilingual 0.6B model (per-chunk prompt_id
+// language conditioning) and the English speech-streaming 0.6B model (no prompt,
+// auto-detected from the encoder's inputs).
+//
+// Pipeline per chunk: native C++ mel featurizer -> cache-aware encoder
+// (+ prompt_id when present) -> greedy RNNT decode, carrying the encoder caches
+// and decoder LSTM state across chunks.
 
 #include "eddy/models/nemotron/nemotron.hpp"
 
