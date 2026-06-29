@@ -16,4 +16,7 @@ target_link_libraries(hf_fetch_models PRIVATE eddy)
 add_executable(benchmark_fleurs benchmark_fleurs.cpp)
 target_link_libraries(benchmark_fleurs PRIVATE eddy)
 
-install(TARGETS parakeet_cli nemotron_cli hf_fetch_models benchmark_fleurs DESTINATION bin)
+add_executable(benchmark_nemotron_fleurs benchmark_nemotron_fleurs.cpp)
+target_link_libraries(benchmark_nemotron_fleurs PRIVATE eddy)
+
+install(TARGETS parakeet_cli nemotron_cli hf_fetch_models benchmark_fleurs benchmark_nemotron_fleurs DESTINATION bin)

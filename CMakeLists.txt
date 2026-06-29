@@ -64,6 +64,7 @@ target_sources(eddy
 
     # Nemotron cache-aware streaming implementation
     src/models/nemotron/nemotron_openvino.cpp
+    src/models/nemotron/nemotron_featurizer.cpp
 )
 
 # Link dependencies

@@ -11,8 +11,14 @@
 #include "eddy/models/nemotron/nemotron.hpp"
 
 #include "eddy/backends/openvino_backend.hpp"
+#include "eddy/models/nemotron/nemotron_featurizer.hpp"
+
+#include <memory>
 
 #include <openvino/openvino.hpp>
+#include <openvino/op/bitwise_not.hpp>
+#include <openvino/op/logical_not.hpp>
+#include <openvino/core/graph_util.hpp>
 #include <nlohmann/json.hpp>
 
 #include <string_view>
@@ -39,6 +45,30 @@ struct MelBuf {
   size_t bins = 0;
   size_t frames = 0;
 };
+
+// The OpenVINO NPU plugin miscompiles BitwiseNot on a boolean tensor: it does
+// an integer bitwise complement, so ~0 = -1 and ~1 = -2 are *both* nonzero
+// ("true"). The FastConformer attention mask is built with a `~` over a bool,
+// so on NPU the mask becomes all-true -> every key is masked -> uniform softmax
+// -> the encoder output collapses to ~0 and every transcript is empty. Replace
+// BitwiseNot(bool) with the semantically identical LogicalNot, which the NPU
+// compiles correctly; it is a no-op on CPU/GPU. Returns the (possibly rewritten)
+// model ready to compile.
+std::shared_ptr<ov::Model> load_npu_safe(ov::Core& core, const std::string& xml) {
+  auto model = core.read_model(xml);
+  bool changed = false;
+  for (const auto& node : model->get_ordered_ops()) {
+    if (ov::as_type_ptr<ov::op::v13::BitwiseNot>(node)) {
+      auto repl = std::make_shared<ov::op::v1::LogicalNot>(node->input_value(0));
+      repl->set_friendly_name(node->get_friendly_name());
+      ov::copy_runtime_info(node, repl);
+      ov::replace_node(node, repl);
+      changed = true;
+    }
+  }
+  if (changed) model->validate_nodes_and_infer_types();
+  return model;
+}
 
 ov::Tensor make_i32(int value) {
   ov::Tensor t(ov::element::i32, ov::Shape{1});
@@ -81,8 +111,11 @@ struct OpenVINONemotron::Impl {
 
   std::vector<std::string> vocab;  // id -> piece (raw, ▁-marked)
 
-  ov::CompiledModel preproc, encoder, decoder, joint;
-  ov::InferRequest preproc_req, encoder_req, decoder_req, joint_req;
+  ov::CompiledModel encoder, decoder, joint;
+  ov::InferRequest encoder_req, decoder_req, joint_req;
+
+  // Native C++ log-mel featurizer replacing the nemotron_preprocessor.xml IR.
+  std::unique_ptr<MelFeaturizer> featurizer;
 
   // Metadata
   int sample_rate = 16000;
@@ -203,17 +236,41 @@ void OpenVINONemotron::ensure_compiled() const {
       }
     }
 
-    // --- Compile models (preprocessor on CPU; rest on chosen device) ---
-    std::string preproc_device = "CPU";
-    if (const char* env = std::getenv("EDDY_PREPROC_DEVICE")) {
-      if (*env) preproc_device = env;
+    // --- Mel featurizer (native C++, replaces nemotron_preprocessor.xml) ---
+    // The IR preprocessor is dynamic-shaped (NPU-incompatible) and adds an
+    // OV inference per chunk; the native featurizer reproduces it exactly
+    // (validated to fp16-storage precision). paths.preprocessor is unused.
+    impl_->featurizer = std::make_unique<MelFeaturizer>(impl_->sample_rate, impl_->mel_features);
+    // Guard: the featurizer's framing must match the model's expected geometry.
+    // A full chunk (chunk_mel_frames * sample_rate/100 samples) must yield
+    // chunk_mel_frames + 1 mel frames; otherwise metadata (sample_rate /
+    // chunk_mel_frames) disagrees with the hardcoded 10 ms hop and the mel would
+    // silently misalign with the encoder.
+    {
+      const size_t cs = impl_->chunk_samples();
+      std::vector<float> probe(cs, 0.0f);
+      std::vector<float> mel_probe;
+      size_t probe_frames = 0;
+      impl_->featurizer->compute(probe.data(), cs, static_cast<int>(cs), mel_probe, probe_frames);
+      const size_t expected = static_cast<size_t>(impl_->chunk_mel_frames) + 1;
+      if (probe_frames != expected) {
+        throw std::runtime_error(
+            "Nemotron C++ featurizer geometry mismatch: produced " +
+            std::to_string(probe_frames) + " frames for a chunk, expected " +
+            std::to_string(expected) + " (chunk_mel_frames=" +
+            std::to_string(impl_->chunk_mel_frames) + ", sample_rate=" +
+            std::to_string(impl_->sample_rate) + "). The model's featurizer "
+            "config differs from the hardcoded 25 ms/10 ms framing.");
+      }
     }
-    impl_->preproc = core.compile_model(impl_->paths.preprocessor, preproc_device);
-    impl_->encoder = core.compile_model(impl_->paths.encoder, device);
+
+    // --- Compile models on the chosen device ---
+    // The encoder carries the attention-mask BitwiseNot that the NPU plugin
+    // miscompiles, so load it through the rewrite (no-op on CPU/GPU).
+    impl_->encoder = core.compile_model(load_npu_safe(core, impl_->paths.encoder), device);
     impl_->decoder = core.compile_model(impl_->paths.decoder, device);
     impl_->joint = core.compile_model(impl_->paths.joint, device);
 
-    impl_->preproc_req = impl_->preproc.create_infer_request();
     impl_->encoder_req = impl_->encoder.create_infer_request();
     impl_->decoder_req = impl_->decoder.create_infer_request();
     impl_->joint_req = impl_->joint.create_infer_request();
@@ -273,6 +330,7 @@ TranscriptionResult OpenVINONemotron::transcribe(const std::vector<float>& pcm) 
   std::vector<int> all_tokens;
 
   MelBuf mel_cache;  // last pre_encode_cache frames of previous chunk's mel
+  std::vector<float> mel_scratch;  // per-chunk featurizer output [bins * t_mel]
 
   const ov::Tensor prompt_tensor = make_i32(prompt_id);
 
@@ -284,13 +342,6 @@ TranscriptionResult OpenVINONemotron::transcribe(const std::vector<float>& pcm) 
   ov::Tensor token(I.token_et, ov::Shape{1, 1});
   const ov::Tensor token_length = make_i32(1);
   const ov::Tensor mel_length = make_i32(static_cast<int>(total));
-  // audio_length is intentionally the FULL padded chunk size on every chunk,
-  // including the final short chunk. This mirrors the WER-validated Python
-  // reference (transcribe_ov.py: the chunk is np.pad'd to chunk_samples and
-  // chunk.shape[1] == chunk_samples is passed). The preprocessor IR does not gate
-  // mel output on this value, so passing the real (end-off) count would diverge
-  // from the validated path without changing output.
-  const ov::Tensor audio_length = make_i32(static_cast<int>(chunk_samples));
 
   size_t off = 0;
   while (off < pcm.size()) {
@@ -301,14 +352,15 @@ TranscriptionResult OpenVINONemotron::transcribe(const std::vector<float>& pcm) 
     std::memset(adst, 0, audio.get_byte_size());
     std::copy(pcm.begin() + static_cast<long>(off), pcm.begin() + static_cast<long>(end), adst);
 
-    // Preprocessor: audio -> mel [1, bins, T_mel]
-    I.preproc_req.set_tensor("audio", audio);
-    I.preproc_req.set_tensor("audio_length", audio_length);
-    I.preproc_req.infer();
-    const ov::Tensor mel_out = I.preproc_req.get_tensor("mel");
-    const ov::Shape mel_shape = mel_out.get_shape();  // [1, bins, T_mel]
-    const size_t t_mel = mel_shape[2];
-    const float* mel_src = mel_out.data<float>();
+    // Preprocessor: audio -> mel [bins, T_mel] (native C++ featurizer).
+    // audio_length is intentionally the FULL padded chunk size on every chunk
+    // (mirrors the WER-validated reference: the chunk is zero-padded to
+    // chunk_samples and that full length is passed), so the length mask zeros
+    // only the trailing frame, which the assembly below trims anyway.
+    size_t t_mel = 0;
+    I.featurizer->compute(adst, chunk_samples, static_cast<int>(chunk_samples),
+                          mel_scratch, t_mel);
+    const float* mel_src = mel_scratch.data();  // bin-major [bins * t_mel]
 
     // Build encoder mel input [1, bins, total]: prepend cache (or zero
     // pre_encode_cache on first chunk), then pad/trim to total. (reusing the

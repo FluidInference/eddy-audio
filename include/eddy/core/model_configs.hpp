@@ -47,12 +47,13 @@ namespace model_configs {
     // NVIDIA Nemotron-3.5-ASR-Streaming-Multilingual 0.6B (cache-aware
     // streaming FastConformer-RNNT, prompt-conditioned multilingual).
     // Distinct file set + metadata.json (cache shapes, prompt_dictionary,
-    // lang_tag_token_ids) consumed by the eddy::nemotron backend.
+    // lang_tag_token_ids) consumed by the eddy::nemotron backend. The mel
+    // preprocessor is computed natively in C++ (eddy::nemotron::MelFeaturizer),
+    // so nemotron_preprocessor.xml/.bin are intentionally NOT required.
     inline const std::vector<std::string> NEMOTRON_FILES = {
         "nemotron_encoder.xml", "nemotron_encoder.bin",
         "nemotron_decoder.xml", "nemotron_decoder.bin",
         "nemotron_joint.xml", "nemotron_joint.bin",
-        "nemotron_preprocessor.xml", "nemotron_preprocessor.bin",
         "nemotron_vocab.json", "metadata.json"
     };
 
