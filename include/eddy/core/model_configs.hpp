@@ -65,11 +65,25 @@ namespace model_configs {
         .repo_subdir = "fp16"
     };
 
+    // INT8 weight-only encoder (per-channel symmetric; Conformer relative-pos
+    // projections kept FP16) + FP16 decoder/joint/preprocessor. WER matches
+    // FP16/FP32 (en_us 10.99 vs 11.78); ~half the RAM of FP16 (2.1GB vs 3.9GB)
+    // and ~half the disk. No CPU speed gain (weights decompress to float on
+    // x86); the win is memory footprint — chiefly for Intel NPU / constrained
+    // deployments. Same repo, "int8" subfolder.
+    inline const ModelConfig NEMOTRON_STREAMING_INT8 = {
+        .repo_id = "FluidInference/Nemotron-3.5-ASR-Streaming-Multilingual-0.6b-ov",
+        .required_files = NEMOTRON_FILES,
+        .cache_subdir = "nemotron-streaming-int8",
+        .repo_subdir = "int8"
+    };
+
     // Model name lookup map
     inline const std::map<std::string, ModelConfig> MODEL_MAP = {
         {"parakeet-v2", PARAKEET_V2},
         {"parakeet-v3", PARAKEET_V3},
-        {"nemotron-streaming", NEMOTRON_STREAMING}
+        {"nemotron-streaming", NEMOTRON_STREAMING},
+        {"nemotron-streaming-int8", NEMOTRON_STREAMING_INT8}
     };
 
     // Default model
