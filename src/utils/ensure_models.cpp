@@ -57,6 +57,14 @@ static bool download_single_file(const std::string& url,
     }
     return false;
   }
+  // The charset permits '.' and '/', so reject ".." components explicitly to
+  // stop a caller-supplied filename from writing outside the target directory.
+  for (const auto& part : output_path) {
+    if (part == "..") {
+      if (error_msg) *error_msg = "Refusing to download: path traversal in " + output_path.string();
+      return false;
+    }
+  }
 
   // Create parent directory
   std::error_code ec;
@@ -75,6 +83,10 @@ static bool download_single_file(const std::string& url,
   // Execute download
   int ret = std::system(curl_cmd.c_str());
   if (ret != 0) {
+    // Remove any partial file: an interrupted transfer leaves a truncated file
+    // that file_nonempty() would later accept, silently skipping a re-download
+    // and loading a corrupt model.
+    std::filesystem::remove(output_path, ec);
     if (error_msg) {
       *error_msg = "curl failed with exit code " + std::to_string(ret) + " for URL: " + url;
     }
@@ -84,6 +96,7 @@ static bool download_single_file(const std::string& url,
   // Verify downloaded file
   auto size = std::filesystem::file_size(output_path, ec);
   if (ec || size == 0) {
+    std::filesystem::remove(output_path, ec);
     if (error_msg) {
       *error_msg = "Downloaded file is missing or empty: " + output_path.string();
     }

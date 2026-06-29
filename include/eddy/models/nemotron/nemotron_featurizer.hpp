@@ -21,7 +21,8 @@ namespace eddy::nemotron {
 class MelFeaturizer {
  public:
   // Nemotron defaults: 16 kHz, 128 mels, 25 ms Hann window (400 samples),
-  // 10 ms hop (160), 512-pt FFT, preemphasis 0.97, log guard 2^-24.
+  // 10 ms hop (160), 512-pt FFT, preemphasis 0.97, log guard 6e-8 (the value
+  // stored in the exported IR; NeMo's 2^-24 rounds to this at fp16).
   explicit MelFeaturizer(int sample_rate = 16000, int n_mels = 128);
 
   // Compute log-mel for `n` samples of 16 kHz mono float PCM. `valid_samples`

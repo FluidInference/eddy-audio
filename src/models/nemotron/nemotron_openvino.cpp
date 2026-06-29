@@ -60,7 +60,11 @@ std::shared_ptr<ov::Model> load_npu_safe(ov::Core& core, const std::string& xml)
   auto model = core.read_model(xml);
   bool changed = false;
   for (const auto& node : model->get_ordered_ops()) {
-    if (ov::as_type_ptr<ov::op::v13::BitwiseNot>(node)) {
+    // Only a BitwiseNot over a boolean is equivalent to LogicalNot. Guard on the
+    // input element type so a future IR with an integer BitwiseNot isn't silently
+    // miscompiled (LogicalNot would change both semantics and output dtype).
+    if (ov::as_type_ptr<ov::op::v13::BitwiseNot>(node) &&
+        node->get_input_element_type(0) == ov::element::boolean) {
       auto repl = std::make_shared<ov::op::v1::LogicalNot>(node->input_value(0));
       repl->set_friendly_name(node->get_friendly_name());
       ov::copy_runtime_info(node, repl);
@@ -437,9 +441,10 @@ TranscriptionResult OpenVINONemotron::transcribe(const std::vector<float>& pcm) 
       // mismatched IR export throws here instead of silently over-/under-reading.
       // Runtime check (not assert): Release builds define NDEBUG.
       if (cc.get_byte_size() != cache_channel.get_byte_size() ||
-          ctt.get_byte_size() != cache_time.get_byte_size()) {
+          ctt.get_byte_size() != cache_time.get_byte_size() ||
+          cl.get_element_type() != ov::element::i32) {
         throw std::runtime_error(
-            "Nemotron encoder cache_*_out byte size differs from the pre-allocated "
+            "Nemotron encoder cache_*_out shape/type differs from the pre-allocated "
             "input cache; the model IR does not match metadata.json cache shapes.");
       }
       std::memcpy(cache_channel.data<float>(), cc.data<float>(), cache_channel.get_byte_size());

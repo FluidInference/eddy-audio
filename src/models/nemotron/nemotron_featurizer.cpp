@@ -161,6 +161,10 @@ void MelFeaturizer::compute(const float* audio, std::size_t n, int valid_samples
   out_frames = frames;
   out_mel.assign(static_cast<size_t>(n_mels_) * frames, 0.0f);
 
+  // Frames at index >= valid_samples/hop are zeroed. This intentionally has no
+  // "+1" (unlike `frames` above): it mirrors the OV preprocessor's length mask,
+  // whose mel_length = audio_length/hop (verified — for a full chunk it zeroes
+  // exactly the trailing frame, which the encoder-input assembly then trims).
   const std::size_t valid_frames =
       static_cast<std::size_t>(valid_samples) / static_cast<std::size_t>(hop_);
 
@@ -169,10 +173,11 @@ void MelFeaturizer::compute(const float* audio, std::size_t n, int valid_samples
     if (f >= valid_frames) continue;  // length mask: zero (already zeroed)
 
     // Frame covers padded[f*hop : f*hop+n_fft]; padded index j maps to y[j-pad].
-    const long start = static_cast<long>(f * static_cast<std::size_t>(hop_)) - pad;
+    // ptrdiff_t (not long, which is 32-bit on Win64) to avoid overflow on long audio.
+    const std::ptrdiff_t start = static_cast<std::ptrdiff_t>(f * static_cast<std::size_t>(hop_)) - pad;
     for (int t = 0; t < n_fft_; ++t) {
-      const long src = start + t;
-      const float s = (src >= 0 && src < static_cast<long>(n)) ? y[static_cast<std::size_t>(src)] : 0.0f;
+      const std::ptrdiff_t src = start + t;
+      const float s = (src >= 0 && src < static_cast<std::ptrdiff_t>(n)) ? y[static_cast<std::size_t>(src)] : 0.0f;
       re[t] = s * window_[t];
       im[t] = 0.0f;
     }

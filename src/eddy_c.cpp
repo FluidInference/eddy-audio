@@ -609,13 +609,14 @@ EDDY_API EddyError eddy_nemotron_infer_buffer(EddyNemotronModel handle, const fl
         if (err) *err = copy_string("[Eddy Error] Invalid argument: null pointer");
         return EDDY_ERROR_INVALID_ARGUMENT;
     }
+    // Zero-init before any other early return so callers that follow the
+    // "always safe to eddy_nemotron_free_result" contract never delete[]
+    // uninitialized pointers (and so a throw mid-fill is cleaned up in catch).
+    *out = EddyNemotronResult{};
     if (sample_rate != 16000) {
         if (err) *err = copy_string("[Eddy Error] Nemotron expects 16kHz mono audio");
         return EDDY_ERROR_INVALID_ARGUMENT;
     }
-    // Zero-init so a throw mid-fill (e.g. copy_string OOM after text is set) is
-    // cleaned up by eddy_nemotron_free_result in the catch instead of leaking.
-    *out = EddyNemotronResult{};
     try {
         auto* h = static_cast<CNemotron*>(handle);
         std::vector<float> samples(pcm, pcm + length);
@@ -637,14 +638,14 @@ EDDY_API EddyError eddy_nemotron_infer_file(EddyNemotronModel handle, const char
         if (err) *err = copy_string("[Eddy Error] Invalid argument: null pointer");
         return EDDY_ERROR_INVALID_ARGUMENT;
     }
+    // Zero-init on every path (FILE_NOT_FOUND, a read_wav throw on a malformed
+    // file, ...) so a caller that frees *out after any error never delete[]s
+    // uninitialized pointers.
+    *out = EddyNemotronResult{};
     // Only a genuinely missing file is FILE_NOT_FOUND; read_wav also throws for
     // format/channel/sample-rate/decode errors, which are not filesystem issues.
     std::error_code ec;
     if (!std::filesystem::exists(wav_path, ec)) {
-        // Zero-init before the early return so a caller that calls
-        // eddy_nemotron_free_result on *out after FILE_NOT_FOUND does not
-        // delete[] uninitialized/garbage pointers.
-        *out = EddyNemotronResult{};
         if (err) *err = copy_string("[Eddy Error] WAV file not found: " + std::string(wav_path));
         return EDDY_ERROR_FILE_NOT_FOUND;
     }
