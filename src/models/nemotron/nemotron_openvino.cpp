@@ -106,7 +106,9 @@ struct OpenVINONemotron::Impl {
   std::mutex infer_guard;
 
   size_t chunk_samples() const {
-    return static_cast<size_t>(static_cast<double>(chunk_mel_frames) * 0.01 * sample_rate);
+    // mel hop is 10 ms => frames * sample_rate / 100. Pure integer math avoids
+    // the rounding hazard of multiplying by the non-representable 0.01.
+    return static_cast<size_t>(chunk_mel_frames) * static_cast<size_t>(sample_rate) / 100;
   }
 };
 
@@ -178,6 +180,14 @@ void OpenVINONemotron::ensure_compiled() const {
         for (const auto& d : arr) s.push_back(d.get<size_t>());
         return s;
       };
+      // These two keys have no sensible default (they size the encoder caches),
+      // so require them explicitly with a path-aware message rather than letting
+      // nlohmann's bare "key not found" propagate from a truncated metadata.json.
+      if (!m.contains("cache_channel_shape") || !m.contains("cache_time_shape")) {
+        throw std::runtime_error(
+            "Nemotron metadata missing required cache shape keys "
+            "(cache_channel_shape / cache_time_shape): " + impl_->paths.metadata_json);
+      }
       impl_->cache_channel_shape = to_shape(m.at("cache_channel_shape"));
       impl_->cache_time_shape = to_shape(m.at("cache_time_shape"));
 
@@ -327,7 +337,10 @@ TranscriptionResult OpenVINONemotron::transcribe(const std::vector<float>& pcm) 
     const size_t keep = std::min(pre_cache, t_mel);
     mel_cache.bins = bins;
     mel_cache.frames = keep;
-    mel_cache.data.assign(bins * keep, 0.0f);
+    // resize, not assign: every element is unconditionally overwritten by the
+    // loop below (bin*keep + t is a bijection over [0, bins*keep)), so the
+    // zero-fill assign() would do is pure waste on this per-chunk hot buffer.
+    mel_cache.data.resize(bins * keep);
     for (size_t bin = 0; bin < bins; ++bin) {
       for (size_t t = 0; t < keep; ++t) {
         mel_cache.data[bin * keep + t] = mel_src[bin * t_mel + (t_mel - keep + t)];

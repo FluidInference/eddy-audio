@@ -19,22 +19,39 @@ static bool file_nonempty(const std::filesystem::path& p) {
 // The download shells out via std::system, so any interpolated component must
 // be free of characters that could break out of the double-quoted argument.
 // Today every field is a compile-time constant, but ModelConfig is caller-
-// supplied, so reject anything outside a conservative path/URL charset rather
-// than risk command injection.
-static bool is_shell_safe(const std::string& s) {
+// supplied, so reject anything outside a conservative charset rather than risk
+// command injection. The long-term fix is to drop std::system for a direct
+// libcurl call and eliminate this class of concern entirely.
+//
+// The URL and the local output path get *separate* allowlists: the URL is the
+// real injection surface (it's assembled from caller-supplied ModelConfig
+// fields) so it stays tight — only the characters an https HuggingFace URL
+// needs, and notably no '~'. The output path is application-controlled (the
+// Eddy cache dir) but must also tolerate native Windows paths, so it
+// additionally allows the native separator '\\' and spaces (the drive-letter
+// ':' is already covered by the shared charset).
+static bool charset_ok(const std::string& s, bool allow_path_chars) {
   for (const unsigned char c : s) {
-    const bool ok = std::isalnum(c) || c == '.' || c == '_' || c == '-' ||
-                    c == '/' || c == ':' || c == '~';
+    bool ok = std::isalnum(c) || c == '.' || c == '_' || c == '-' ||
+              c == '/' || c == ':';
+    if (!ok && allow_path_chars) {
+      // Native Windows paths: backslash separators and spaces inside the
+      // double-quoted argument. None of these can break out of the quotes.
+      ok = (c == '\\' || c == ' ');
+    }
     if (!ok) return false;
   }
   return true;
 }
 
+static bool is_url_safe(const std::string& s) { return charset_ok(s, /*allow_path_chars=*/false); }
+static bool is_path_safe(const std::string& s) { return charset_ok(s, /*allow_path_chars=*/true); }
+
 static bool download_single_file(const std::string& url,
                                   const std::filesystem::path& output_path,
                                   std::string* error_msg = nullptr) {
   // Refuse to build a shell command from unsafe components.
-  if (!is_shell_safe(url) || !is_shell_safe(output_path.string())) {
+  if (!is_url_safe(url) || !is_path_safe(output_path.string())) {
     if (error_msg) {
       *error_msg = "Refusing to download: unsafe characters in URL or path: " + url;
     }

@@ -545,6 +545,19 @@ EDDY_API EddyNemotronModel eddy_nemotron_create(EddyNemotronConfig config, char*
                                    .cache_dir = eddy::get_model_dir(kNemotronModelName).string() }
         );
 
+        // Fail fast at create time if the model files are missing, matching the
+        // eddy_parakeet_create contract. Otherwise the first failure only surfaces
+        // deep inside ensure_compiled() on the initial transcribe()/warmup() call.
+        {
+            std::string check_err;
+            if (!eddy::model_utils::check_models_available(
+                    model_dir, &check_err, eddy::model_configs::NEMOTRON_FILES)) {
+                throw std::runtime_error(
+                    "Nemotron model files not available in '" + model_dir.string() +
+                    "': " + check_err);
+            }
+        }
+
         eddy::nemotron::ModelPaths paths{
             .preprocessor  = (model_dir / "nemotron_preprocessor.xml").string(),
             .encoder       = (model_dir / "nemotron_encoder.xml").string(),
@@ -628,6 +641,10 @@ EDDY_API EddyError eddy_nemotron_infer_file(EddyNemotronModel handle, const char
     // format/channel/sample-rate/decode errors, which are not filesystem issues.
     std::error_code ec;
     if (!std::filesystem::exists(wav_path, ec)) {
+        // Zero-init before the early return so a caller that calls
+        // eddy_nemotron_free_result on *out after FILE_NOT_FOUND does not
+        // delete[] uninitialized/garbage pointers.
+        *out = EddyNemotronResult{};
         if (err) *err = copy_string("[Eddy Error] WAV file not found: " + std::string(wav_path));
         return EDDY_ERROR_FILE_NOT_FOUND;
     }
