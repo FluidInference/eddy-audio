@@ -83,20 +83,19 @@ namespace model_configs {
     // of the multilingual model. Same FastConformer cache-aware RNNT, but no
     // prompt/language conditioning (the eddy backend auto-detects the absent
     // encoder prompt_id input). Same flat file set as NEMOTRON_FILES.
-    // NOTE: the OpenVINO IR repo is produced by the mobius export pipeline; until
-    // it is published this config resolves but downloads will 404.
+    // Shares the multilingual HF repo (no separate space) under "en/" subfolders.
     inline const ModelConfig NEMOTRON_SPEECH = {
-        .repo_id = "FluidInference/nemotron-speech-streaming-en-0.6b-ov",
+        .repo_id = "FluidInference/Nemotron-3.5-ASR-Streaming-Multilingual-0.6b-ov",
         .required_files = NEMOTRON_FILES,
         .cache_subdir = "nemotron-speech-streaming",
-        .repo_subdir = "fp16"
+        .repo_subdir = "en/fp16"
     };
 
     inline const ModelConfig NEMOTRON_SPEECH_INT8 = {
-        .repo_id = "FluidInference/nemotron-speech-streaming-en-0.6b-ov",
+        .repo_id = "FluidInference/Nemotron-3.5-ASR-Streaming-Multilingual-0.6b-ov",
         .required_files = NEMOTRON_FILES,
         .cache_subdir = "nemotron-speech-streaming-int8",
-        .repo_subdir = "int8"
+        .repo_subdir = "en/int8"
     };
 
     // Model name lookup map
