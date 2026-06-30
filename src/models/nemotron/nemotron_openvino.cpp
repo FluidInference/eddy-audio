@@ -257,6 +257,21 @@ void OpenVINONemotron::ensure_compiled() const {
         impl_->chunk_enc = ctx.value("chunk", 0);
         impl_->right_enc = ctx.value("right", 0);
         impl_->window_mel_frames = m.value("window_mel_frames", 0);
+        // chunk_enc is the loop stride in run_window_streaming(); a missing/zero
+        // value would never advance the sliding window (infinite loop), and a
+        // zero window_mel_frames would build a zero-sized mel tensor. The
+        // window-streaming path also skips the cache-aware geometry guard below,
+        // so there is no secondary net — fail loudly here.
+        if (impl_->chunk_enc <= 0) {
+          throw std::runtime_error(
+              "parakeet-unified metadata missing/invalid context_encoder_frames.chunk: " +
+              impl_->paths.metadata_json);
+        }
+        if (impl_->window_mel_frames <= 0) {
+          throw std::runtime_error(
+              "parakeet-unified metadata missing/invalid window_mel_frames: " +
+              impl_->paths.metadata_json);
+        }
       }
 
       if (m.contains("prompt_dictionary")) {
@@ -297,6 +312,24 @@ void OpenVINONemotron::ensure_compiled() const {
             std::to_string(impl_->chunk_mel_frames) + ", sample_rate=" +
             std::to_string(impl_->sample_rate) + "). The model's featurizer "
             "config differs from the hardcoded 25 ms/10 ms framing.");
+      }
+    } else {
+      // Window-streaming counterpart: a full [left|chunk|right] window must yield
+      // exactly window_mel_frames mel frames, or the static-shape NPU encoder
+      // would silently receive a truncated / over-copied mel (run_window_streaming
+      // clamps to win_mel without diagnosing the mismatch).
+      const size_t win_s = static_cast<size_t>(impl_->left_enc + impl_->chunk_enc + impl_->right_enc) *
+                           static_cast<size_t>(impl_->subsampling) *
+                           (static_cast<size_t>(impl_->sample_rate) / 100);
+      std::vector<float> probe(win_s, 0.0f);
+      std::vector<float> mel_probe;
+      size_t probe_frames = 0;
+      impl_->featurizer->compute(probe.data(), win_s, static_cast<int>(win_s), mel_probe, probe_frames);
+      if (probe_frames != static_cast<size_t>(impl_->window_mel_frames)) {
+        throw std::runtime_error(
+            "parakeet-unified featurizer geometry mismatch: produced " +
+            std::to_string(probe_frames) + " mel frames for a window, expected " +
+            "window_mel_frames=" + std::to_string(impl_->window_mel_frames) + ".");
       }
     }
 
@@ -388,9 +421,15 @@ static TranscriptionResult run_window_streaming(
       const long src = start + i;
       window[static_cast<size_t>(i)] = (src >= 0 && src < N) ? pcm[static_cast<size_t>(src)] : 0.0f;
     }
+    // Real (non-padded) sample count within the window: the boundary windows are
+    // zero-padded at the left (first chunk) or right (last chunk) edge, and those
+    // pad samples must be excluded from per-feature normalization so the stats
+    // match NeMo's preprocessor (which normalizes over valid frames only).
+    const long real_lo = std::max(0L, -start);
+    const long real_hi = std::min(win_s, N - start);
+    const int valid_n = static_cast<int>(std::max(0L, real_hi - real_lo));
     size_t t_mel = 0;
-    I.featurizer->compute(window.data(), window.size(), static_cast<int>(window.size()),
-                          mel_scratch, t_mel);
+    I.featurizer->compute(window.data(), window.size(), valid_n, mel_scratch, t_mel);
     float* md = mel_in.data<float>();
     std::memset(md, 0, mel_in.get_byte_size());
     const size_t copyT = std::min(t_mel, win_mel);
@@ -427,6 +466,7 @@ static TranscriptionResult run_window_streaming(
         const ov::Tensor logits = I.joint_req.get_tensor("logits");
         const float* lg = logits.data<float>();
         const size_t vsz = logits.get_size();
+        if (vsz == 0) break;  // empty joint output (IR shape mismatch) — don't read lg[0]
         int best = 0;
         float best_score = lg[0];
         for (size_t i = 1; i < vsz; ++i)
