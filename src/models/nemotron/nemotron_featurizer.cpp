@@ -39,7 +39,7 @@ inline double mel_to_hz(double mel) {
 
 }  // namespace
 
-MelFeaturizer::MelFeaturizer(int sample_rate, int n_mels)
+MelFeaturizer::MelFeaturizer(int sample_rate, int n_mels, bool normalize_per_feature)
     : sample_rate_(sample_rate),
       n_mels_(n_mels),
       n_fft_(512),
@@ -47,7 +47,8 @@ MelFeaturizer::MelFeaturizer(int sample_rate, int n_mels)
       win_length_(static_cast<int>(sample_rate * 0.025 + 0.5)),  // 25 ms -> 400
       n_freq_(512 / 2 + 1),
       preemph_(0.97f),
-      log_guard_(6e-8f) {
+      log_guard_(6e-8f),
+      normalize_per_feature_(normalize_per_feature) {
   // The featurizer is calibrated for NeMo's 16 kHz Nemotron config (25 ms /
   // 10 ms framing -> win 400 / hop 160, 512-pt FFT). A 512 FFT only fits the
   // window if win_length <= n_fft; guard so an unexpected sample rate fails
@@ -191,6 +192,28 @@ void MelFeaturizer::compute(const float* audio, std::size_t n, int valid_samples
       float acc = 0.0f;
       for (int k = 0; k < n_freq_; ++k) acc += row[k] * power[k];
       out_mel[static_cast<size_t>(mbin) * frames + f] = std::log(acc + log_guard_);
+    }
+  }
+
+  // NeMo "per_feature" normalization: per mel bin, subtract the mean and divide
+  // by the std (sample std, ddof=1, +1e-5) over the valid frames; invalid
+  // (length-masked) frames stay zero. Matches the exported preprocessor.
+  if (normalize_per_feature_ && valid_frames >= 2) {
+    const double inv_n = 1.0 / static_cast<double>(valid_frames);
+    const double inv_nm1 = 1.0 / static_cast<double>(valid_frames - 1);
+    for (int mbin = 0; mbin < n_mels_; ++mbin) {
+      float* row = &out_mel[static_cast<size_t>(mbin) * frames];
+      double mean = 0.0;
+      for (std::size_t t = 0; t < valid_frames; ++t) mean += row[t];
+      mean *= inv_n;
+      double var = 0.0;
+      for (std::size_t t = 0; t < valid_frames; ++t) {
+        const double d = row[t] - mean;
+        var += d * d;
+      }
+      const double sd = std::sqrt(var * inv_nm1) + 1e-5;
+      for (std::size_t t = 0; t < valid_frames; ++t)
+        row[t] = static_cast<float>((row[t] - mean) / sd);
     }
   }
 }

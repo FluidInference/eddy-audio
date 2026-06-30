@@ -145,6 +145,21 @@ struct OpenVINONemotron::Impl {
   // backend serves both variants.
   bool has_prompt = false;
 
+  // Whether the encoder carries cross-chunk caches (Nemotron cache-aware). False
+  // for the parakeet-unified fixed-window streaming encoder (stateless, sliding
+  // [left|chunk|right] window). Auto-detected from the encoder's input ports.
+  bool has_cache = false;
+
+  // parakeet-unified fixed-window streaming geometry (metadata "streaming":true).
+  bool window_streaming = false;
+  int subsampling = 8;
+  int left_enc = 0, chunk_enc = 0, right_enc = 0;  // encoder frames per window
+  int window_mel_frames = 0;                       // mel frames the encoder expects
+
+  // NeMo "per_feature" mel normalization (parakeet-unified). Nemotron exports
+  // raw log-mel and leaves this false.
+  bool feature_normalize = false;
+
   ov::element::Type token_et = ov::element::i32;
 
   std::once_flag compile_once;
@@ -225,16 +240,24 @@ void OpenVINONemotron::ensure_compiled() const {
         for (const auto& d : arr) s.push_back(d.get<size_t>());
         return s;
       };
-      // These two keys have no sensible default (they size the encoder caches),
-      // so require them explicitly with a path-aware message rather than letting
-      // nlohmann's bare "key not found" propagate from a truncated metadata.json.
-      if (!m.contains("cache_channel_shape") || !m.contains("cache_time_shape")) {
-        throw std::runtime_error(
-            "Nemotron metadata missing required cache shape keys "
-            "(cache_channel_shape / cache_time_shape): " + impl_->paths.metadata_json);
+      // Cache shapes: present for cache-aware encoders (Nemotron), absent for the
+      // stateless parakeet-unified streaming encoder. Parse if present; the
+      // requirement (when the encoder actually has cache inputs) is enforced
+      // after compile, once has_cache is known.
+      if (m.contains("cache_channel_shape")) impl_->cache_channel_shape = to_shape(m.at("cache_channel_shape"));
+      if (m.contains("cache_time_shape")) impl_->cache_time_shape = to_shape(m.at("cache_time_shape"));
+
+      // parakeet-unified fixed-window streaming geometry.
+      impl_->window_streaming = m.value("streaming", false) && m.contains("context_encoder_frames");
+      impl_->subsampling = m.value("subsampling_factor", 8);
+      impl_->feature_normalize = m.value("feature_normalize", false);
+      if (impl_->window_streaming) {
+        const auto& ctx = m.at("context_encoder_frames");
+        impl_->left_enc = ctx.value("left", 0);
+        impl_->chunk_enc = ctx.value("chunk", 0);
+        impl_->right_enc = ctx.value("right", 0);
+        impl_->window_mel_frames = m.value("window_mel_frames", 0);
       }
-      impl_->cache_channel_shape = to_shape(m.at("cache_channel_shape"));
-      impl_->cache_time_shape = to_shape(m.at("cache_time_shape"));
 
       if (m.contains("prompt_dictionary")) {
         for (auto& [k, v] : m["prompt_dictionary"].items()) {
@@ -252,13 +275,14 @@ void OpenVINONemotron::ensure_compiled() const {
     // The IR preprocessor is dynamic-shaped (NPU-incompatible) and adds an
     // OV inference per chunk; the native featurizer reproduces it exactly
     // (validated to fp16-storage precision). paths.preprocessor is unused.
-    impl_->featurizer = std::make_unique<MelFeaturizer>(impl_->sample_rate, impl_->mel_features);
+    impl_->featurizer = std::make_unique<MelFeaturizer>(impl_->sample_rate, impl_->mel_features,
+                                                        impl_->feature_normalize);
     // Guard: the featurizer's framing must match the model's expected geometry.
     // A full chunk (chunk_mel_frames * sample_rate/100 samples) must yield
     // chunk_mel_frames + 1 mel frames; otherwise metadata (sample_rate /
     // chunk_mel_frames) disagrees with the hardcoded 10 ms hop and the mel would
     // silently misalign with the encoder.
-    {
+    if (!impl_->window_streaming) {
       const size_t cs = impl_->chunk_samples();
       std::vector<float> probe(cs, 0.0f);
       std::vector<float> mel_probe;
@@ -291,8 +315,17 @@ void OpenVINONemotron::ensure_compiled() const {
     // multilingual encoder has a "prompt_id" input; the English speech-streaming
     // encoder does not. Drives whether transcribe() feeds a prompt_id tensor.
     impl_->has_prompt = false;
+    impl_->has_cache = false;
     for (const auto& in : impl_->encoder.inputs()) {
-      if (in.get_names().count("prompt_id")) { impl_->has_prompt = true; break; }
+      if (in.get_names().count("cache_channel")) impl_->has_cache = true;
+      if (in.get_names().count("prompt_id")) { impl_->has_prompt = true; }
+    }
+    // A cache-aware encoder must have its cache shapes in metadata.
+    if (impl_->has_cache &&
+        (impl_->cache_channel_shape.empty() || impl_->cache_time_shape.empty())) {
+      throw std::runtime_error(
+          "Nemotron encoder has cache inputs but metadata is missing "
+          "cache_channel_shape / cache_time_shape: " + impl_->paths.metadata_json);
     }
 
     impl_->token_et = impl_->decoder.input("token").get_element_type();
@@ -317,6 +350,117 @@ void OpenVINONemotron::ensure_compiled() const {
   });
 }
 
+// parakeet-unified fixed-window streaming decode: the encoder is stateless and
+// runs over a sliding [left|chunk|right] window of audio; only the chunk's
+// encoder frames are decoded, with LSTM state carried across windows. Plain
+// greedy RNNT (no caches, no prompt). Reuses the C++ featurizer and the same
+// decoder/joint as the cache-aware path.
+static TranscriptionResult run_window_streaming(
+    OpenVINONemotron::Impl& I, const std::vector<float>& pcm,
+    std::chrono::steady_clock::time_point t_start) {
+  const size_t bins = static_cast<size_t>(I.mel_features);
+  const long efs = static_cast<long>(I.subsampling) * (I.sample_rate / 100);  // encoder-frame samples
+  const long chunk_s = static_cast<long>(I.chunk_enc) * efs;
+  const long left_s = static_cast<long>(I.left_enc) * efs;
+  const long win_s = static_cast<long>(I.left_enc + I.chunk_enc + I.right_enc) * efs;
+  const size_t win_mel = static_cast<size_t>(I.window_mel_frames);
+
+  const ov::Shape lstm_shape{static_cast<size_t>(I.decoder_layers), 1,
+                             static_cast<size_t>(I.decoder_hidden)};
+  ov::Tensor h(ov::element::f32, lstm_shape), c(ov::element::f32, lstm_shape);
+  std::memset(h.data<float>(), 0, h.get_byte_size());
+  std::memset(c.data<float>(), 0, c.get_byte_size());
+  int last_token = I.blank_idx;
+  std::vector<int> all_tokens;
+
+  ov::Tensor token(I.token_et, ov::Shape{1, 1});
+  const ov::Tensor token_length = make_i32(1);
+  const ov::Tensor mel_length = make_i32(static_cast<int>(win_mel));
+  ov::Tensor mel_in(ov::element::f32, ov::Shape{1, bins, win_mel});
+  std::vector<float> window(static_cast<size_t>(win_s));
+  std::vector<float> mel_scratch;
+
+  const long N = static_cast<long>(pcm.size());
+  for (long pos = 0; pos < N; pos += chunk_s) {
+    // Audio window [pos-left_s, pos+chunk_s+right_s), zero-padded at the edges.
+    const long start = pos - left_s;
+    for (long i = 0; i < win_s; ++i) {
+      const long src = start + i;
+      window[static_cast<size_t>(i)] = (src >= 0 && src < N) ? pcm[static_cast<size_t>(src)] : 0.0f;
+    }
+    size_t t_mel = 0;
+    I.featurizer->compute(window.data(), window.size(), static_cast<int>(window.size()),
+                          mel_scratch, t_mel);
+    float* md = mel_in.data<float>();
+    std::memset(md, 0, mel_in.get_byte_size());
+    const size_t copyT = std::min(t_mel, win_mel);
+    for (size_t b = 0; b < bins; ++b)
+      for (size_t t = 0; t < copyT; ++t) md[b * win_mel + t] = mel_scratch[b * t_mel + t];
+
+    I.encoder_req.set_tensor("mel", mel_in);
+    I.encoder_req.set_tensor("mel_length", mel_length);
+    I.encoder_req.infer();
+    const ov::Tensor encoded = I.encoder_req.get_tensor("encoded");  // [1, D, T_enc]
+    const ov::Shape es = encoded.get_shape();
+    const size_t enc_d = es[1], t_enc = es[2];
+    const float* ed = encoded.data<float>();
+
+    // Decode only the chunk's encoder frames [left_enc : left_enc+chunk_enc].
+    const size_t keep_lo = std::min(static_cast<size_t>(I.left_enc), t_enc);
+    const size_t keep_hi = std::min(static_cast<size_t>(I.left_enc + I.chunk_enc), t_enc);
+    ov::Tensor enc_step(ov::element::f32, ov::Shape{1, enc_d, 1});
+    for (size_t t = keep_lo; t < keep_hi; ++t) {
+      float* sp = enc_step.data<float>();
+      for (size_t ch = 0; ch < enc_d; ++ch) sp[ch] = ed[ch * t_enc + t];
+      for (size_t sym = 0; sym < I.config.max_symbols_per_frame; ++sym) {
+        if (I.token_et == ov::element::i64) token.data<int64_t>()[0] = last_token;
+        else token.data<int32_t>()[0] = last_token;
+        I.decoder_req.set_tensor("token", token);
+        I.decoder_req.set_tensor("token_length", token_length);
+        I.decoder_req.set_tensor("h_in", h);
+        I.decoder_req.set_tensor("c_in", c);
+        I.decoder_req.infer();
+        const ov::Tensor dec_out = I.decoder_req.get_tensor("decoder_out");
+        I.joint_req.set_tensor("encoder", enc_step);
+        I.joint_req.set_tensor("decoder", dec_out);
+        I.joint_req.infer();
+        const ov::Tensor logits = I.joint_req.get_tensor("logits");
+        const float* lg = logits.data<float>();
+        const size_t vsz = logits.get_size();
+        int best = 0;
+        float best_score = lg[0];
+        for (size_t i = 1; i < vsz; ++i)
+          if (lg[i] > best_score) { best_score = lg[i]; best = static_cast<int>(i); }
+        if (best == I.blank_idx) break;
+        all_tokens.push_back(best);
+        last_token = best;
+        const ov::Tensor h_out = I.decoder_req.get_tensor("h_out");
+        const ov::Tensor c_out = I.decoder_req.get_tensor("c_out");
+        std::memcpy(h.data<float>(), h_out.data<float>(), h.get_byte_size());
+        std::memcpy(c.data<float>(), c_out.data<float>(), c.get_byte_size());
+      }
+    }
+  }
+
+  auto piece = [&](int tok) -> const std::string& {
+    static const std::string empty;
+    return (tok >= 0 && tok < static_cast<int>(I.vocab.size())) ? I.vocab[tok] : empty;
+  };
+  TranscriptionResult result;
+  result.prompt_id_used = 0;
+  result.token_ids = all_tokens;
+  std::string body;
+  for (int tok : all_tokens) {
+    if (tok == I.blank_idx || tok >= I.vocab_size) continue;
+    if (I.lang_tag_token_ids.count(tok)) continue;  // monolingual: no lang tags
+    body += piece(tok);
+  }
+  result.text = finalize_text(body);
+  result.latency_ms =
+      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_start).count();
+  return result;
+}
+
 TranscriptionResult OpenVINONemotron::transcribe(const std::vector<float>& pcm) {
   ensure_compiled();
   std::lock_guard<std::mutex> lock(impl_->infer_guard);
@@ -324,6 +468,14 @@ TranscriptionResult OpenVINONemotron::transcribe(const std::vector<float>& pcm) 
   const auto t_start = std::chrono::steady_clock::now();
 
   auto& I = *impl_;
+
+  // parakeet-unified fixed-window streaming: stateless encoder over a sliding
+  // [left|chunk|right] window (no caches/prompt). Separate path from the
+  // cache-aware Nemotron loop below.
+  if (I.window_streaming) {
+    return run_window_streaming(I, pcm, t_start);
+  }
+
   const size_t bins = static_cast<size_t>(I.mel_features);
   const size_t total = static_cast<size_t>(I.total_mel_frames);
   const size_t pre_cache = static_cast<size_t>(I.pre_encode_cache);
