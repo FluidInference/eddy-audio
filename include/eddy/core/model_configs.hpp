@@ -98,6 +98,18 @@ namespace model_configs {
         .repo_subdir = "en/int8"
     };
 
+    // NVIDIA parakeet-unified-en-0.6b: stateless FastConformer-RNNT (English).
+    // Streams via a fixed [left|chunk|right] attention window (static shapes ->
+    // NPU-compatible), served by the eddy::nemotron backend's window-streaming
+    // path (no caches/prompt; auto-detected from metadata). Points at the
+    // streaming IR; an offline (dynamic, CPU/GPU) variant also exists at fp16/.
+    inline const ModelConfig PARAKEET_UNIFIED = {
+        .repo_id = "FluidInference/parakeet-unified-en-0.6b-ov",
+        .required_files = NEMOTRON_FILES,
+        .cache_subdir = "parakeet-unified",
+        .repo_subdir = "streaming/fp16"
+    };
+
     // Model name lookup map
     inline const std::map<std::string, ModelConfig> MODEL_MAP = {
         {"parakeet-v2", PARAKEET_V2},
@@ -105,7 +117,8 @@ namespace model_configs {
         {"nemotron-streaming", NEMOTRON_STREAMING},
         {"nemotron-streaming-int8", NEMOTRON_STREAMING_INT8},
         {"nemotron-speech-streaming", NEMOTRON_SPEECH},
-        {"nemotron-speech-streaming-int8", NEMOTRON_SPEECH_INT8}
+        {"nemotron-speech-streaming-int8", NEMOTRON_SPEECH_INT8},
+        {"parakeet-unified", PARAKEET_UNIFIED}
     };
 
     // Default model
