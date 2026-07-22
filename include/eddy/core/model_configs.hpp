@@ -39,7 +39,7 @@ namespace model_configs {
     };
 
     inline const ModelConfig PARAKEET_V3 = {
-        .repo_id = "FluidInference/parakeet-tdt-1.1b-v3-ov",
+        .repo_id = "FluidInference/parakeet-tdt-0.6b-v3-ov",
         .required_files = PARAKEET_STANDARD_FILES,
         .cache_subdir = "parakeet-v3"
     };

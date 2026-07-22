@@ -1,6 +1,9 @@
 // OpenVINO utility functions for model compilation and configuration
 
 #include "eddy/utils/openvino_utils.hpp"
+#include "openvino_utils_detail.hpp"
+
+#include <openvino/op/log_softmax.hpp>
 
 #include <algorithm>
 #include <cctype>
@@ -73,6 +76,36 @@ std::string to_upper(const std::string& s) {
 
 }  // anonymous namespace
 
+namespace detail {
+
+bool normalize_negative_log_softmax_axes(ov::Model& model) {
+  bool changed = false;
+
+  for (const auto& node : model.get_ordered_ops()) {
+    const auto log_softmax = ov::as_type_ptr<ov::op::v5::LogSoftmax>(node);
+    if (!log_softmax || log_softmax->get_axis() >= 0) continue;
+
+    const auto rank = log_softmax->get_input_partial_shape(0).rank();
+    if (rank.is_dynamic()) continue;
+
+    const int64_t original_axis = log_softmax->get_axis();
+    const int64_t normalized_axis = original_axis + rank.get_length();
+    if (normalized_axis < 0) continue;
+
+    log_softmax->set_axis(normalized_axis);
+    changed = true;
+    if (is_debug_enabled()) {
+      std::cerr << "[DEBUG] Normalized NPU LogSoftmax axis " << original_axis << " to "
+                << normalized_axis << " for " << log_softmax->get_friendly_name() << "\n";
+    }
+  }
+
+  if (changed) model.validate_nodes_and_infer_types();
+  return changed;
+}
+
+}  // namespace detail
+
 ov::CompiledModel compile_component(ov::Core& core, const ModelFile& file, const std::string& device) {
   if (file.path.empty()) {
     throw std::invalid_argument("Parakeet component path is empty");
@@ -90,6 +123,16 @@ ov::CompiledModel compile_component(ov::Core& core, const ModelFile& file, const
     }
     if (!cfg.empty()) return core.import_model(blob_stream, device, cfg);
     return core.import_model(blob_stream, device);
+  }
+
+  // Intel's NPU compiler rejects valid negative LogSoftmax axes in its
+  // AlignDimensionsForDPU pass. Canonicalize static-rank axes in memory; the
+  // model files on disk and every non-NPU path remain unchanged.
+  if (to_upper(device) == "NPU") {
+    auto model = core.read_model(file.path);
+    detail::normalize_negative_log_softmax_axes(*model);
+    if (!cfg.empty()) return core.compile_model(model, device, cfg);
+    return core.compile_model(model, device);
   }
 
   if (!cfg.empty()) return core.compile_model(file.path, device, cfg);

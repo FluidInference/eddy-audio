@@ -42,7 +42,6 @@ cache/
 # Test files
 test_*.wav
 test_*.py
-*_test.cpp
 
 # Large archives
 *.zip
