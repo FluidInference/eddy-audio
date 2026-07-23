@@ -14,7 +14,7 @@ For Apple platforms (macOS/iOS), use [FluidAudio](https://github.com/FluidInfere
 
 **Model Cards:**
 - [Parakeet V2 (English)](https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v2-ov)
-- [Parakeet V3 (Multilingual)](https://huggingface.co/FluidInference/parakeet-tdt-1.1b-v3-ov)
+- [Parakeet V3 (Multilingual)](https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v3-ov)
 - [Whisper large-v3-turbo](https://huggingface.co/FluidInference/whisper-large-v3-turbo-fp16-ov-npu)
 
 ## Building
