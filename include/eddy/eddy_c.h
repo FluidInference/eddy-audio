@@ -19,6 +19,7 @@
  * - All strings/results allocated by Eddy must be freed by caller
  * - Use eddy_whisper_free_result() to free EddyWhisperResult (frees all nested strings)
  * - Use eddy_parakeet_free_result() to free EddyParakeetResult
+ * - Use eddy_parakeet_free_component_devices() to free EddyParakeetComponentDevices
  * - Use eddy_free_string() for standalone strings only
  * - Do NOT call eddy_free_string() on strings inside results freed by eddy_*_free_result()
  *
@@ -225,6 +226,45 @@ EDDY_API EddyError eddy_parakeet_infer_file(EddyParakeetModel model, const char*
 EDDY_API EddyError eddy_parakeet_infer_buffer(EddyParakeetModel model, const float* pcm, size_t length, int sample_rate, EddyParakeetResult* result, char** error_message);
 EDDY_API char* eddy_parakeet_decode_tokens(EddyParakeetModel model, const int* token_ids, size_t count);
 EDDY_API void eddy_parakeet_free_result(EddyParakeetResult* result);
+
+/**
+ * @brief Devices each Parakeet graph actually executes on (OpenVINO EXECUTION_DEVICES)
+ *
+ * Each field is a device name such as "CPU" or "NPU", comma-separated if a graph spans
+ * several. A graph that fell back from NPU to CPU reports "CPU". With "AUTO" the value is a
+ * snapshot: while AUTO is still starting up on CPU, OpenVINO reports "(CPU)", and the real
+ * device once it has handed over.
+ * Free with eddy_parakeet_free_component_devices().
+ */
+typedef struct {
+    char* preprocessor;
+    char* encoder;
+    char* decoder;
+    char* joint;
+} EddyParakeetComponentDevices;
+
+/**
+ * @brief Report where each Parakeet graph compiled, compiling the models first if needed
+ * @param model Parakeet model handle (must not be NULL)
+ * @param devices Out parameter (must not be NULL). Overwritten on entry, so free a previous
+ *        result before reusing the struct. Zeroed on error.
+ * @param error_message Out parameter for error message (can be NULL). Must be freed with eddy_free_string.
+ * @return EDDY_OK; EDDY_ERROR_INVALID_ARGUMENT for a NULL model or devices;
+ *         EDDY_ERROR_MODEL_LOAD_FAILED if the models fail to compile or their devices can't be read;
+ *         EDDY_ERROR_UNKNOWN for any other failure
+ *
+ * Doesn't wait for a transcription running on another thread with the same model.
+ */
+EDDY_API EddyError eddy_parakeet_get_component_devices(
+    EddyParakeetModel model,
+    EddyParakeetComponentDevices* devices,
+    char** error_message);
+
+/**
+ * @brief Free the strings in an EddyParakeetComponentDevices and set them to NULL
+ * @param devices Devices to free (NULL and already-freed structs are ignored)
+ */
+EDDY_API void eddy_parakeet_free_component_devices(EddyParakeetComponentDevices* devices);
 
 // -----------------------------
 // Nemotron streaming (OpenVINO) C API

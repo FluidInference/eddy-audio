@@ -503,6 +503,43 @@ EDDY_API EddyError eddy_parakeet_infer_buffer(EddyParakeetModel handle, const fl
     return parakeet_infer_common(h, pcm, length, sample_rate, out, err);
 }
 
+EDDY_API void eddy_parakeet_free_component_devices(EddyParakeetComponentDevices* devices) {
+    if (!devices) return;
+    delete[] devices->preprocessor; devices->preprocessor = nullptr;
+    delete[] devices->encoder; devices->encoder = nullptr;
+    delete[] devices->decoder; devices->decoder = nullptr;
+    delete[] devices->joint; devices->joint = nullptr;
+}
+
+EDDY_API EddyError eddy_parakeet_get_component_devices(EddyParakeetModel handle, EddyParakeetComponentDevices* out, char** err) {
+    if (out) *out = EddyParakeetComponentDevices{};
+    if (!handle || !out) {
+        if (err) *err = copy_string("[Eddy Error] Invalid argument: null pointer");
+        return EDDY_ERROR_INVALID_ARGUMENT;
+    }
+    auto model = std::dynamic_pointer_cast<eddy::parakeet::OpenVINOParakeet>(static_cast<CParakeet*>(handle)->model);
+    if (!model) {
+        if (err) *err = copy_string("[Eddy Error] Component devices need an OpenVINO Parakeet model");
+        return EDDY_ERROR_INVALID_ARGUMENT;
+    }
+    try {
+        const auto devices = model->component_devices();
+        out->preprocessor = copy_string(devices.preprocessor);
+        out->encoder = copy_string(devices.encoder);
+        out->decoder = copy_string(devices.decoder);
+        out->joint = copy_string(devices.joint);
+        return EDDY_OK;
+    } catch (const std::exception& e) {
+        eddy_parakeet_free_component_devices(out);
+        if (err) *err = capture_exception(e);
+        return EDDY_ERROR_MODEL_LOAD_FAILED;
+    } catch (...) {
+        eddy_parakeet_free_component_devices(out);
+        if (err) *err = copy_string("[Eddy Error] Unknown exception in get_component_devices");
+        return EDDY_ERROR_UNKNOWN;
+    }
+}
+
 EDDY_API char* eddy_parakeet_decode_tokens(EddyParakeetModel handle, const int* token_ids, size_t count) {
     if (!handle || !token_ids || count == 0) return copy_string("");
     auto* h = static_cast<CParakeet*>(handle);

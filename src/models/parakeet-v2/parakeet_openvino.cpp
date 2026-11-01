@@ -506,5 +506,17 @@ void OpenVINOParakeet::warmup() {
   ensure_compiled_model();
 }
 
+ComponentDevices OpenVINOParakeet::component_devices() const {
+  // The compiled models are only written inside ensure_compiled_model()'s call_once, which also
+  // publishes them, so no lock is needed. Taking request_guard would wait for in-flight inference.
+  ensure_compiled_model();
+  return {
+      .preprocessor = execution_devices(impl_->preproc_model),
+      .encoder = execution_devices(impl_->encoder_model),
+      .decoder = execution_devices(impl_->decoder_model),
+      .joint = execution_devices(impl_->joint_model),
+  };
+}
+
 }  // namespace eddy::parakeet
 

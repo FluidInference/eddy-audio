@@ -166,7 +166,10 @@ int main(int argc, char* argv[]) {
         std::cout.flush();
         auto parakeet_model = std::static_pointer_cast<eddy::parakeet::OpenVINOParakeet>(model);
         parakeet_model->warmup();
-        std::cout << "[OK]\n\n";
+        std::cout << "[OK]\n";
+        const auto devices = parakeet_model->component_devices();
+        std::cout << "Execution devices: preprocessor=" << devices.preprocessor << " encoder=" << devices.encoder
+                  << " decoder=" << devices.decoder << " joint=" << devices.joint << "\n\n";
 
         // Prepare audio segment
         eddy::parakeet::AudioSegment segment;
