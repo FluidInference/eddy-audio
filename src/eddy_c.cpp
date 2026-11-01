@@ -505,10 +505,10 @@ EDDY_API EddyError eddy_parakeet_infer_buffer(EddyParakeetModel handle, const fl
 
 EDDY_API void eddy_parakeet_free_component_devices(EddyParakeetComponentDevices* devices) {
     if (!devices) return;
-    for (char** field : {&devices->preprocessor, &devices->encoder, &devices->decoder, &devices->joint}) {
-        delete[] *field;
-        *field = nullptr;
-    }
+    delete[] devices->preprocessor; devices->preprocessor = nullptr;
+    delete[] devices->encoder; devices->encoder = nullptr;
+    delete[] devices->decoder; devices->decoder = nullptr;
+    delete[] devices->joint; devices->joint = nullptr;
 }
 
 EDDY_API EddyError eddy_parakeet_get_component_devices(EddyParakeetModel handle, EddyParakeetComponentDevices* out, char** err) {

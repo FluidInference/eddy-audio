@@ -231,7 +231,9 @@ EDDY_API void eddy_parakeet_free_result(EddyParakeetResult* result);
  * @brief Devices each Parakeet graph actually executes on (OpenVINO EXECUTION_DEVICES)
  *
  * Each field is a device name such as "CPU" or "NPU", comma-separated if a graph spans
- * several. A graph that fell back from NPU to CPU reports "CPU".
+ * several. A graph that fell back from NPU to CPU reports "CPU". With "AUTO" the value is a
+ * snapshot: while AUTO is still starting up on CPU, OpenVINO reports "(CPU)", and the real
+ * device once it has handed over.
  * Free with eddy_parakeet_free_component_devices().
  */
 typedef struct {
@@ -244,10 +246,14 @@ typedef struct {
 /**
  * @brief Report where each Parakeet graph compiled, compiling the models first if needed
  * @param model Parakeet model handle (must not be NULL)
- * @param devices Out parameter (must not be NULL). Zeroed on error.
+ * @param devices Out parameter (must not be NULL). Overwritten on entry, so free a previous
+ *        result before reusing the struct. Zeroed on error.
  * @param error_message Out parameter for error message (can be NULL). Must be freed with eddy_free_string.
- * @return EDDY_OK, EDDY_ERROR_INVALID_ARGUMENT for a NULL model or devices,
- *         or EDDY_ERROR_MODEL_LOAD_FAILED if the models fail to compile
+ * @return EDDY_OK; EDDY_ERROR_INVALID_ARGUMENT for a NULL model or devices;
+ *         EDDY_ERROR_MODEL_LOAD_FAILED if the models fail to compile or their devices can't be read;
+ *         EDDY_ERROR_UNKNOWN for any other failure
+ *
+ * Doesn't wait for a transcription running on another thread with the same model.
  */
 EDDY_API EddyError eddy_parakeet_get_component_devices(
     EddyParakeetModel model,

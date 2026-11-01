@@ -97,7 +97,7 @@ public:
   void warmup();
 
   /// Where each graph actually compiled, e.g. "NPU", or "CPU" after an NPU-to-CPU
-  /// fallback. Compiles the models first if needed.
+  /// fallback. Compiles the models first if needed; doesn't wait for in-flight inference.
   [[nodiscard]] ComponentDevices component_devices() const;
 
   // Public to allow helper functions in implementation file

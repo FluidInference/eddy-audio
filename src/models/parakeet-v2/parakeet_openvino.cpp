@@ -507,8 +507,9 @@ void OpenVINOParakeet::warmup() {
 }
 
 ComponentDevices OpenVINOParakeet::component_devices() const {
+  // The compiled models are only written inside ensure_compiled_model()'s call_once, which also
+  // publishes them, so no lock is needed. Taking request_guard would wait for in-flight inference.
   ensure_compiled_model();
-  std::lock_guard<std::mutex> lock(impl_->request_guard);
   return {
       .preprocessor = execution_devices(impl_->preproc_model),
       .encoder = execution_devices(impl_->encoder_model),
