@@ -164,4 +164,13 @@ ov::CompiledModel compile_with_npu_fallback(ov::Core& core,
   }
 }
 
+std::string execution_devices(const ov::CompiledModel& model) {
+  std::string joined;
+  for (const auto& device : model.get_property(ov::execution_devices)) {
+    if (!joined.empty()) joined += ",";
+    joined += device;
+  }
+  return joined;
+}
+
 }  // namespace eddy::parakeet

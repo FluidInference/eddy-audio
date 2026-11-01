@@ -19,6 +19,7 @@
  * - All strings/results allocated by Eddy must be freed by caller
  * - Use eddy_whisper_free_result() to free EddyWhisperResult (frees all nested strings)
  * - Use eddy_parakeet_free_result() to free EddyParakeetResult
+ * - Use eddy_parakeet_free_component_devices() to free EddyParakeetComponentDevices
  * - Use eddy_free_string() for standalone strings only
  * - Do NOT call eddy_free_string() on strings inside results freed by eddy_*_free_result()
  *
@@ -225,6 +226,39 @@ EDDY_API EddyError eddy_parakeet_infer_file(EddyParakeetModel model, const char*
 EDDY_API EddyError eddy_parakeet_infer_buffer(EddyParakeetModel model, const float* pcm, size_t length, int sample_rate, EddyParakeetResult* result, char** error_message);
 EDDY_API char* eddy_parakeet_decode_tokens(EddyParakeetModel model, const int* token_ids, size_t count);
 EDDY_API void eddy_parakeet_free_result(EddyParakeetResult* result);
+
+/**
+ * @brief Devices each Parakeet graph actually executes on (OpenVINO EXECUTION_DEVICES)
+ *
+ * Each field is a device name such as "CPU" or "NPU", comma-separated if a graph spans
+ * several. A graph that fell back from NPU to CPU reports "CPU".
+ * Free with eddy_parakeet_free_component_devices().
+ */
+typedef struct {
+    char* preprocessor;
+    char* encoder;
+    char* decoder;
+    char* joint;
+} EddyParakeetComponentDevices;
+
+/**
+ * @brief Report where each Parakeet graph compiled, compiling the models first if needed
+ * @param model Parakeet model handle (must not be NULL)
+ * @param devices Out parameter (must not be NULL). Zeroed on error.
+ * @param error_message Out parameter for error message (can be NULL). Must be freed with eddy_free_string.
+ * @return EDDY_OK, EDDY_ERROR_INVALID_ARGUMENT for a NULL model or devices,
+ *         or EDDY_ERROR_MODEL_LOAD_FAILED if the models fail to compile
+ */
+EDDY_API EddyError eddy_parakeet_get_component_devices(
+    EddyParakeetModel model,
+    EddyParakeetComponentDevices* devices,
+    char** error_message);
+
+/**
+ * @brief Free the strings in an EddyParakeetComponentDevices and set them to NULL
+ * @param devices Devices to free (NULL and already-freed structs are ignored)
+ */
+EDDY_API void eddy_parakeet_free_component_devices(EddyParakeetComponentDevices* devices);
 
 // -----------------------------
 // Nemotron streaming (OpenVINO) C API

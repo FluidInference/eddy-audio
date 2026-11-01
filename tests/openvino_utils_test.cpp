@@ -1,3 +1,4 @@
+#include "eddy/utils/openvino_utils.hpp"
 #include "utils/openvino_utils_detail.hpp"
 
 #include <openvino/openvino.hpp>
@@ -99,6 +100,16 @@ bool test_non_log_softmax_is_untouched() {
                 "model without LogSoftmax reports no change");
 }
 
+bool test_cpu_model_reports_cpu_execution_device() {
+  auto input = std::make_shared<ov::op::v0::Parameter>(ov::element::f32, ov::Shape{1, 4});
+  auto relu = std::make_shared<ov::op::v0::Relu>(input);
+  auto model = std::make_shared<ov::Model>(ov::OutputVector{relu}, ov::ParameterVector{input});
+  ov::Core core;
+  const auto compiled = core.compile_model(model, "CPU");
+  const auto devices = eddy::parakeet::execution_devices(compiled);
+  return expect(devices == "CPU", "CPU-compiled model reports CPU, got: " + devices);
+}
+
 }  // namespace
 
 int main() {
@@ -108,5 +119,6 @@ int main() {
   ok &= test_positive_axis_is_unchanged();
   ok &= test_dynamic_rank_is_unchanged();
   ok &= test_non_log_softmax_is_untouched();
+  ok &= test_cpu_model_reports_cpu_execution_device();
   return ok ? 0 : 1;
 }

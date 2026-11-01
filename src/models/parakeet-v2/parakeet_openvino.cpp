@@ -506,5 +506,16 @@ void OpenVINOParakeet::warmup() {
   ensure_compiled_model();
 }
 
+ComponentDevices OpenVINOParakeet::component_devices() const {
+  ensure_compiled_model();
+  std::lock_guard<std::mutex> lock(impl_->request_guard);
+  return {
+      .preprocessor = execution_devices(impl_->preproc_model),
+      .encoder = execution_devices(impl_->encoder_model),
+      .decoder = execution_devices(impl_->decoder_model),
+      .joint = execution_devices(impl_->joint_model),
+  };
+}
+
 }  // namespace eddy::parakeet
 

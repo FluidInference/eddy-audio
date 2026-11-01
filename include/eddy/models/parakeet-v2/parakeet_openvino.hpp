@@ -68,6 +68,14 @@ struct DecoderState {
     }
 };
 
+/// Devices each compiled Parakeet graph executes on (OpenVINO `ov::execution_devices`)
+struct ComponentDevices {
+  std::string preprocessor;
+  std::string encoder;
+  std::string decoder;
+  std::string joint;
+};
+
 // Forward declaration
 class OpenVINOParakeet;
 
@@ -87,6 +95,10 @@ public:
   std::string decode_tokens(const std::vector<int>& token_ids) const override;
 
   void warmup();
+
+  /// Where each graph actually compiled, e.g. "NPU", or "CPU" after an NPU-to-CPU
+  /// fallback. Compiles the models first if needed.
+  [[nodiscard]] ComponentDevices component_devices() const;
 
   // Public to allow helper functions in implementation file
   struct Impl;

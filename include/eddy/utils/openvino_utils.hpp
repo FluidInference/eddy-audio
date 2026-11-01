@@ -21,4 +21,8 @@ namespace eddy::parakeet {
                                                            const std::string& device,
                                                            const char* component_name = nullptr);
 
+// Devices a compiled model executes on (OpenVINO ov::execution_devices), comma-separated,
+// e.g. "NPU", or "CPU" for a graph compile_with_npu_fallback moved off the NPU
+[[nodiscard]] std::string execution_devices(const ov::CompiledModel& model);
+
 }  // namespace eddy::parakeet
